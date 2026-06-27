@@ -1,6 +1,6 @@
 {
   "$schema": "./targets.schema.json",
-  "_note": "Placeholder social URLs (REPLACE-*) and per-site crawler choices must be filled in. Per the brief: Instagram is present for all competitors except Pandora; Facebook is present for 8 of 9 competitors (remove the one that does not apply); TikTok only for B-Watch, Bozinovski, Zia, and MY:TIME. `web.source` and `per_location_stock` are decided during Phase 1 profiling.",
+  "_note": "Populated from MY:TIME's 'Competitive Landscape' research file (2026-06). Pandora has no public Instagram or Facebook (web-only monobrand). TikTok present only for MY:TIME, B-Watch, Bozinovski, Zia. For competitors, web.source and per_location_stock are decided during Phase 1 profiling.",
   "targets": [
     {
       "id": "mytime",
@@ -9,7 +9,7 @@
       "is_self": true,
       "web": {
         "enabled": true,
-        "url": "https://www.mytime.mk",
+        "url": "https://www.mytime.mk/",
         "source": "xml_feed",
         "feed_env": "MYTIME_FEED_URL",
         "monobrand": false,
@@ -17,9 +17,9 @@
         "locations": []
       },
       "social": {
-        "instagram": "https://instagram.com/REPLACE-mytime",
-        "facebook": "https://facebook.com/REPLACE-mytime",
-        "tiktok": "https://tiktok.com/@REPLACE-mytime"
+        "instagram": "https://www.instagram.com/mytime.mk/",
+        "facebook": "https://www.facebook.com/mytimemk",
+        "tiktok": "https://www.tiktok.com/@mytime.mk"
       },
       "registry": { "central_registry_id": null }
     },
@@ -30,16 +30,16 @@
       "is_self": false,
       "web": {
         "enabled": true,
-        "url": "https://REPLACE-b-watch",
+        "url": "https://bwatch.mk/",
         "source": null,
         "monobrand": false,
         "per_location_stock": null,
         "locations": []
       },
       "social": {
-        "instagram": "https://instagram.com/REPLACE-b-watch",
-        "facebook": "https://facebook.com/REPLACE-b-watch",
-        "tiktok": "https://tiktok.com/@REPLACE-b-watch"
+        "instagram": "https://www.instagram.com/bwatchshop/",
+        "facebook": "https://www.facebook.com/bwatchshop",
+        "tiktok": "https://www.tiktok.com/@bwatchshop"
       },
       "registry": { "central_registry_id": null }
     },
@@ -50,16 +50,16 @@
       "is_self": false,
       "web": {
         "enabled": true,
-        "url": "https://REPLACE-bozinovski",
+        "url": "https://bozinovski.com.mk/",
         "source": null,
         "monobrand": false,
         "per_location_stock": null,
         "locations": []
       },
       "social": {
-        "instagram": "https://instagram.com/REPLACE-bozinovski",
-        "facebook": "https://facebook.com/REPLACE-bozinovski",
-        "tiktok": "https://tiktok.com/@REPLACE-bozinovski"
+        "instagram": "https://www.instagram.com/bozinovski_official/",
+        "facebook": "https://www.facebook.com/Bozinovskiwatchesandjewelry",
+        "tiktok": "https://www.tiktok.com/@bozhinovskiofficial"
       },
       "registry": { "central_registry_id": null }
     },
@@ -70,15 +70,15 @@
       "is_self": false,
       "web": {
         "enabled": true,
-        "url": "https://REPLACE-saat-saat",
+        "url": "https://saatandsaat.mk/",
         "source": null,
         "monobrand": false,
         "per_location_stock": null,
         "locations": []
       },
       "social": {
-        "instagram": "https://instagram.com/REPLACE-saat-saat",
-        "facebook": "https://facebook.com/REPLACE-saat-saat"
+        "instagram": "https://www.instagram.com/saatvesaat.mk/",
+        "facebook": "https://www.facebook.com/saatsaatmk/"
       },
       "registry": { "central_registry_id": null }
     },
@@ -89,15 +89,15 @@
       "is_self": false,
       "web": {
         "enabled": true,
-        "url": "https://REPLACE-hronometar",
+        "url": "https://www.hronometar.mk/",
         "source": null,
         "monobrand": false,
         "per_location_stock": null,
         "locations": []
       },
       "social": {
-        "instagram": "https://instagram.com/REPLACE-hronometar",
-        "facebook": "https://facebook.com/REPLACE-hronometar"
+        "instagram": "https://www.instagram.com/hronometar",
+        "facebook": "https://www.facebook.com/Hronometar"
       },
       "registry": { "central_registry_id": null }
     },
@@ -108,15 +108,15 @@
       "is_self": false,
       "web": {
         "enabled": true,
-        "url": "https://REPLACE-watch-club",
+        "url": "https://watchclub.mk/",
         "source": null,
         "monobrand": false,
         "per_location_stock": null,
         "locations": []
       },
       "social": {
-        "instagram": "https://instagram.com/REPLACE-watch-club",
-        "facebook": "https://facebook.com/REPLACE-watch-club"
+        "instagram": "https://www.instagram.com/watchclubskopje",
+        "facebook": "https://www.facebook.com/thewatchclubskopje"
       },
       "registry": { "central_registry_id": null }
     },
@@ -127,16 +127,16 @@
       "is_self": false,
       "web": {
         "enabled": true,
-        "url": "https://REPLACE-zia",
+        "url": "https://zia.mk/",
         "source": null,
         "monobrand": false,
         "per_location_stock": null,
         "locations": []
       },
       "social": {
-        "instagram": "https://instagram.com/REPLACE-zia",
-        "facebook": "https://facebook.com/REPLACE-zia",
-        "tiktok": "https://tiktok.com/@REPLACE-zia"
+        "instagram": "https://www.instagram.com/zia__official/",
+        "facebook": "https://www.facebook.com/www.zia.mk/",
+        "tiktok": "https://www.tiktok.com/@zia.jewelry.official"
       },
       "registry": { "central_registry_id": null }
     },
@@ -147,15 +147,13 @@
       "is_self": false,
       "web": {
         "enabled": true,
-        "url": "https://REPLACE-pandora",
+        "url": "https://www.pandorashop.mk/",
         "source": null,
         "monobrand": true,
         "per_location_stock": null,
         "locations": []
       },
-      "social": {
-        "facebook": "https://facebook.com/REPLACE-pandora"
-      },
+      "social": {},
       "registry": { "central_registry_id": null }
     },
     {
@@ -165,15 +163,15 @@
       "is_self": false,
       "web": {
         "enabled": true,
-        "url": "https://REPLACE-swarovski",
+        "url": "https://royalhouse.mk/",
         "source": null,
         "monobrand": true,
         "per_location_stock": null,
         "locations": []
       },
       "social": {
-        "instagram": "https://instagram.com/REPLACE-swarovski",
-        "facebook": "https://facebook.com/REPLACE-swarovski"
+        "instagram": "https://www.instagram.com/swarovski_retailer_macedonia",
+        "facebook": "https://www.facebook.com/SwarovskiRetailerMacedonia/"
       },
       "registry": { "central_registry_id": null }
     },
@@ -184,8 +182,8 @@
       "is_self": false,
       "web": { "enabled": false },
       "social": {
-        "instagram": "https://instagram.com/REPLACE-chapter-03",
-        "facebook": "https://facebook.com/REPLACE-chapter-03"
+        "instagram": "https://www.instagram.com/chapter.03_",
+        "facebook": "https://www.facebook.com/p/Chapter03-100063521080809/"
       },
       "registry": { "central_registry_id": null }
     }
