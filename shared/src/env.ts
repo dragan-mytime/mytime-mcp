@@ -1,8 +1,25 @@
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { config as loadDotenv } from "dotenv";
+
+// Find the repo-root .env by walking up from cwd — workspace scripts run with
+// the package dir as cwd, so a plain dotenv() would miss the root .env.
+function findEnvFile(start: string = process.cwd()): string | undefined {
+  let dir = start;
+  for (let i = 0; i < 6; i++) {
+    const candidate = join(dir, ".env");
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}
 
 // Load .env once at import time. Safe to call repeatedly; dotenv won't override
 // variables that are already set in the real environment (e.g. on the VPS).
-loadDotenv();
+const envPath = findEnvFile();
+loadDotenv(envPath ? { path: envPath } : undefined);
 
 /**
  * Read a required environment variable, failing fast with a clear message that

@@ -1,5 +1,5 @@
 import type { ProductObservation, Target } from "@mytime/shared";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "./index.js";
 import {
   ingestionRuns,
@@ -11,6 +11,13 @@ import {
 } from "./schema.js";
 
 const num = (v?: number | null): string | null => (v == null ? null : String(v));
+const CHUNK = 500;
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
 
 /** Upsert a target (from config) and ensure its "online" location exists. Returns the location id. */
 export async function ensureTargetAndLocation(db: Db, t: Target): Promise<string> {
@@ -43,10 +50,11 @@ export async function ensureTargetAndLocation(db: Db, t: Target): Promise<string
 }
 
 /**
- * Persist a batch of product observations idempotently for (target, runDate).
- * Upserts products, inventory_snapshots, and prices on their unique keys, so
- * re-running the same day updates rows in place instead of duplicating them.
- * Runs in a single transaction. Returns the number of products written.
+ * Persist product observations idempotently for (target, runDate) using batched
+ * multi-row upserts (one round-trip per ~500 rows, not per row — essential over
+ * a network connection). Re-running the same day updates rows in place via the
+ * unique keys, never duplicating. Runs in a single transaction.
+ * Returns the number of products written.
  */
 export async function writeObservations(
   db: Db,
@@ -56,77 +64,133 @@ export async function writeObservations(
   source: string,
   obs: ProductObservation[],
 ): Promise<number> {
-  let n = 0;
+  // Dedupe within a run (last wins) so ON CONFLICT can't hit a row twice.
+  const byId = new Map<string, ProductObservation>();
+  for (const o of obs) byId.set(o.externalId, o);
+  const items = [...byId.values()];
+  if (items.length === 0) return 0;
+
   await db.transaction(async (tx) => {
-    for (const o of obs) {
-      const productFields = {
-        name: o.name,
-        brand: o.brand ?? null,
-        modelRef: o.modelRef ?? null,
-        category: o.category ?? null,
-        gender: o.gender ?? null,
-        collection: o.collection ?? null,
-        attributes: o.attributes ?? null,
-        url: o.url ?? null,
-        imageUrl: o.imageUrl ?? null,
-        currency: o.currency,
-        lastSeenDate: runDate,
-      };
-      const [p] = await tx
+    // 1) products — upsert and capture id per externalId.
+    const idByExternal = new Map<string, string>();
+    const productValues = items.map((o) => ({
+      targetId: target.id,
+      externalId: o.externalId,
+      name: o.name,
+      brand: o.brand ?? null,
+      modelRef: o.modelRef ?? null,
+      category: o.category ?? null,
+      gender: o.gender ?? null,
+      collection: o.collection ?? null,
+      attributes: o.attributes ?? null,
+      url: o.url ?? null,
+      imageUrl: o.imageUrl ?? null,
+      currency: o.currency,
+      firstSeenDate: runDate,
+      lastSeenDate: runDate,
+    }));
+    for (const c of chunk(productValues, CHUNK)) {
+      const ret = await tx
         .insert(products)
-        .values({
-          targetId: target.id,
-          externalId: o.externalId,
-          firstSeenDate: runDate,
-          ...productFields,
-        })
+        .values(c)
         .onConflictDoUpdate({
           target: [products.targetId, products.externalId],
-          set: { ...productFields, active: true },
+          set: {
+            name: sql`excluded.name`,
+            brand: sql`excluded.brand`,
+            modelRef: sql`excluded.model_ref`,
+            category: sql`excluded.category`,
+            gender: sql`excluded.gender`,
+            collection: sql`excluded.collection`,
+            attributes: sql`excluded.attributes`,
+            url: sql`excluded.url`,
+            imageUrl: sql`excluded.image_url`,
+            currency: sql`excluded.currency`,
+            lastSeenDate: sql`excluded.last_seen_date`,
+            active: sql`true`,
+          },
         })
-        .returning({ id: products.id });
-      if (!p) throw new Error(`product upsert returned no id for ${target.id}/${o.externalId}`);
-      const productId = p.id;
+        .returning({ id: products.id, externalId: products.externalId });
+      for (const r of ret) idByExternal.set(r.externalId, r.id);
+    }
 
-      const stockFields = {
-        stockStatus: o.stockStatus,
-        stockQuantity: o.stockQuantity ?? null,
-        qtyBasis: o.qtyBasis,
-        locationsCount: o.locationsCount ?? 0,
-        inStockLocations: o.inStockLocations ?? null,
-        source,
-      };
+    // 2) inventory snapshots
+    const snapValues = items.flatMap((o) => {
+      const productId = idByExternal.get(o.externalId);
+      return productId
+        ? [
+            {
+              productId,
+              locationId,
+              capturedDate: runDate,
+              stockStatus: o.stockStatus,
+              stockQuantity: o.stockQuantity ?? null,
+              qtyBasis: o.qtyBasis,
+              locationsCount: o.locationsCount ?? 0,
+              inStockLocations: o.inStockLocations ?? null,
+              source,
+            },
+          ]
+        : [];
+    });
+    for (const c of chunk(snapValues, CHUNK)) {
       await tx
         .insert(inventorySnapshots)
-        .values({ productId, locationId, capturedDate: runDate, ...stockFields })
+        .values(c)
         .onConflictDoUpdate({
           target: [
             inventorySnapshots.productId,
             inventorySnapshots.locationId,
             inventorySnapshots.capturedDate,
           ],
-          set: stockFields,
+          set: {
+            stockStatus: sql`excluded.stock_status`,
+            stockQuantity: sql`excluded.stock_quantity`,
+            qtyBasis: sql`excluded.qty_basis`,
+            locationsCount: sql`excluded.locations_count`,
+            inStockLocations: sql`excluded.in_stock_locations`,
+            source: sql`excluded.source`,
+          },
         });
+    }
 
-      const priceFields = {
-        price: String(o.price),
-        salePrice: num(o.salePrice),
-        discountAmount: num(o.discountAmount),
-        discountPct: num(o.discountPct),
-        currency: o.currency,
-        source,
-      };
+    // 3) prices
+    const priceValues = items.flatMap((o) => {
+      const productId = idByExternal.get(o.externalId);
+      return productId
+        ? [
+            {
+              productId,
+              capturedDate: runDate,
+              price: String(o.price),
+              salePrice: num(o.salePrice),
+              discountAmount: num(o.discountAmount),
+              discountPct: num(o.discountPct),
+              currency: o.currency,
+              source,
+            },
+          ]
+        : [];
+    });
+    for (const c of chunk(priceValues, CHUNK)) {
       await tx
         .insert(prices)
-        .values({ productId, capturedDate: runDate, ...priceFields })
+        .values(c)
         .onConflictDoUpdate({
           target: [prices.productId, prices.capturedDate],
-          set: priceFields,
+          set: {
+            price: sql`excluded.price`,
+            salePrice: sql`excluded.sale_price`,
+            discountAmount: sql`excluded.discount_amount`,
+            discountPct: sql`excluded.discount_pct`,
+            currency: sql`excluded.currency`,
+            source: sql`excluded.source`,
+          },
         });
-      n++;
     }
   });
-  return n;
+
+  return items.length;
 }
 
 /** Append a row to the ingestion run log (observability / run summary). */
