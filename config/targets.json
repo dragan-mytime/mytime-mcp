@@ -21,7 +21,9 @@
         "facebook": "https://www.facebook.com/mytimemk",
         "tiktok": "https://www.tiktok.com/@mytime.mk"
       },
-      "registry": { "central_registry_id": null }
+      "registry": {
+        "central_registry_id": null
+      }
     },
     {
       "id": "b-watch",
@@ -31,9 +33,9 @@
       "web": {
         "enabled": true,
         "url": "https://bwatch.mk/",
-        "source": null,
+        "source": "firecrawl",
         "monobrand": false,
-        "per_location_stock": null,
+        "per_location_stock": false,
         "locations": []
       },
       "social": {
@@ -41,7 +43,9 @@
         "facebook": "https://www.facebook.com/bwatchshop",
         "tiktok": "https://www.tiktok.com/@bwatchshop"
       },
-      "registry": { "central_registry_id": null }
+      "registry": {
+        "central_registry_id": null
+      }
     },
     {
       "id": "bozinovski",
@@ -51,9 +55,9 @@
       "web": {
         "enabled": true,
         "url": "https://bozinovski.com.mk/",
-        "source": null,
+        "source": "firecrawl",
         "monobrand": false,
-        "per_location_stock": null,
+        "per_location_stock": false,
         "locations": []
       },
       "social": {
@@ -61,7 +65,9 @@
         "facebook": "https://www.facebook.com/Bozinovskiwatchesandjewelry",
         "tiktok": "https://www.tiktok.com/@bozhinovskiofficial"
       },
-      "registry": { "central_registry_id": null }
+      "registry": {
+        "central_registry_id": null
+      }
     },
     {
       "id": "saat-saat",
@@ -71,16 +77,18 @@
       "web": {
         "enabled": true,
         "url": "https://saatandsaat.mk/",
-        "source": null,
+        "source": "firecrawl",
         "monobrand": false,
-        "per_location_stock": null,
+        "per_location_stock": false,
         "locations": []
       },
       "social": {
         "instagram": "https://www.instagram.com/saatvesaat.mk/",
         "facebook": "https://www.facebook.com/saatsaatmk/"
       },
-      "registry": { "central_registry_id": null }
+      "registry": {
+        "central_registry_id": null
+      }
     },
     {
       "id": "hronometar",
@@ -90,16 +98,18 @@
       "web": {
         "enabled": true,
         "url": "https://www.hronometar.mk/",
-        "source": null,
+        "source": "firecrawl",
         "monobrand": false,
-        "per_location_stock": null,
+        "per_location_stock": false,
         "locations": []
       },
       "social": {
         "instagram": "https://www.instagram.com/hronometar",
         "facebook": "https://www.facebook.com/Hronometar"
       },
-      "registry": { "central_registry_id": null }
+      "registry": {
+        "central_registry_id": null
+      }
     },
     {
       "id": "watch-club",
@@ -109,16 +119,18 @@
       "web": {
         "enabled": true,
         "url": "https://watchclub.mk/",
-        "source": null,
+        "source": "firecrawl",
         "monobrand": false,
-        "per_location_stock": null,
+        "per_location_stock": false,
         "locations": []
       },
       "social": {
         "instagram": "https://www.instagram.com/watchclubskopje",
         "facebook": "https://www.facebook.com/thewatchclubskopje"
       },
-      "registry": { "central_registry_id": null }
+      "registry": {
+        "central_registry_id": null
+      }
     },
     {
       "id": "zia",
@@ -128,9 +140,9 @@
       "web": {
         "enabled": true,
         "url": "https://zia.mk/",
-        "source": null,
+        "source": "firecrawl",
         "monobrand": false,
-        "per_location_stock": null,
+        "per_location_stock": false,
         "locations": []
       },
       "social": {
@@ -138,7 +150,9 @@
         "facebook": "https://www.facebook.com/www.zia.mk/",
         "tiktok": "https://www.tiktok.com/@zia.jewelry.official"
       },
-      "registry": { "central_registry_id": null }
+      "registry": {
+        "central_registry_id": null
+      }
     },
     {
       "id": "pandora",
@@ -148,13 +162,15 @@
       "web": {
         "enabled": true,
         "url": "https://www.pandorashop.mk/",
-        "source": null,
+        "source": "firecrawl",
         "monobrand": true,
-        "per_location_stock": null,
+        "per_location_stock": false,
         "locations": []
       },
       "social": {},
-      "registry": { "central_registry_id": null }
+      "registry": {
+        "central_registry_id": null
+      }
     },
     {
       "id": "swarovski",
@@ -164,28 +180,34 @@
       "web": {
         "enabled": true,
         "url": "https://royalhouse.mk/",
-        "source": null,
+        "source": "firecrawl",
         "monobrand": true,
-        "per_location_stock": null,
+        "per_location_stock": false,
         "locations": []
       },
       "social": {
         "instagram": "https://www.instagram.com/swarovski_retailer_macedonia",
         "facebook": "https://www.facebook.com/SwarovskiRetailerMacedonia/"
       },
-      "registry": { "central_registry_id": null }
+      "registry": {
+        "central_registry_id": null
+      }
     },
     {
       "id": "chapter-03",
       "name": "Chapter 03",
       "legal_entity": "КОНЦЕПТ ТРЕЈД ОНЕ ДООЕЛ",
       "is_self": false,
-      "web": { "enabled": false },
+      "web": {
+        "enabled": false
+      },
       "social": {
         "instagram": "https://www.instagram.com/chapter.03_",
         "facebook": "https://www.facebook.com/p/Chapter03-100063521080809/"
       },
-      "registry": { "central_registry_id": null }
+      "registry": {
+        "central_registry_id": null
+      }
     }
   ]
 }
