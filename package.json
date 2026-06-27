@@ -16,6 +16,7 @@
     "validate:targets": "node shared/dist/scripts/validate-targets.js config/targets.json",
     "db:generate": "pnpm --filter @mytime/db generate",
     "db:migrate": "pnpm --filter @mytime/db migrate",
+    "db:seed": "pnpm --filter @mytime/db seed",
     "ingest": "pnpm --filter @mytime/ingestion start"
   },
   "devDependencies": {

@@ -19,6 +19,7 @@
     "build": "tsc",
     "generate": "drizzle-kit generate",
     "migrate": "drizzle-kit migrate",
+    "seed": "node dist/seed.js",
     "studio": "drizzle-kit studio"
   },
   "dependencies": {
