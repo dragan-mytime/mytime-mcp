@@ -11,8 +11,8 @@ MY:TIME's own catalog is **not** crawled; it comes from the Adform XML feed (`MY
 1. **Per-location (per-physical-store) stock is NOT exposed on any of the 8 sites.** Every storefront shows a single, site-wide online stock signal. Pandora has a *store locator*, but that is physical addresses only — not per-store inventory. **→ The brief's "in stock at 3 locations today, 1 tomorrow" model does not apply; depletion runs on the single online stock signal (see §3).** This is flagged per-site in the table.
 
 2. **Stock granularity splits into two tiers:**
-   - **Tier A — exact unit counts** (true unit-level depletion): **B-Watch, Bozinovski**. Their WooCommerce product pages expose the real stock quantity as the quantity selector's `max` (e.g. B-Watch `max="9"`, Bozinovski `max="5"`), and the WC Store API adds `low_stock_remaining`.
-   - **Tier B — binary in/out** (availability-flip + assortment depletion): **Watch Club, Saat&Saat, Hronometar, Pandora, Zia, Swarovski**. These expose only `InStock`/`OutOfStock` (schema.org / OpenGraph / platform availability), no public quantity.
+   - **Tier A — exact unit counts** (true unit-level depletion): **B-Watch, Bozinovski, Saat&Saat**. B-Watch/Bozinovski expose the real stock quantity via the WooCommerce qty selector `max` (e.g. `max="9"`, `max="5"`) plus the WC Store API `low_stock_remaining`; **Saat&Saat renders an explicit "N in stock" count** on every product page (the three sampled products all showed `1 in stock`, consistent with single-piece watch stock).
+   - **Tier B — binary in/out, quantity assumed = 1**: **Watch Club, Hronometar, Pandora, Zia, Swarovski**. These expose only `InStock`/`OutOfStock` (schema.org / OpenGraph / platform availability). Per the agreed **modeling convention, when an exact count isn't available the engine assumes 1 unit** — so an `InStock → OutOfStock` flip (or a SKU disappearing) counts as 1 *estimated* unit sold, flagged as assumed rather than counted.
 
 3. **The 3 WooCommerce sites have an open Store REST API** (`/wp-json/wc/store/v1/products?per_page=100&page=N`, all returned HTTP 200) yielding `id`, `name`, `prices`, `is_in_stock`, `stock_availability`, `low_stock_remaining` as JSON, 100 products/request. This is faster, cheaper, and more reliable than HTML scraping for catalog + price + availability — and should be the primary collector for those sites, with a product-page pass only to read the exact `qty max` where present.
 
@@ -29,7 +29,7 @@ MY:TIME's own catalog is **not** crawled; it comes from the Adform XML feed (`MY
 | 1 | **B-Watch** | WooCommerce (WP 7.0 / WC 10.6) | No (SSR) | ✅ MKD | schema `InStock` + WC Store API `is_in_stock` | ✅ **qty `max`** + `low_stock_remaining` | ❌ not exposed | none | **FireCrawl** (+ WC Store API) |
 | 2 | **Bozinovski** | WooCommerce (WP / WPBakery) | No (SSR) | ✅ MKD | schema `InStock` + WC Store API | ✅ **qty `max`** + `low_stock_remaining` | ❌ not exposed | none | **FireCrawl** (+ WC Store API) |
 | 3 | **Watch Club** | WooCommerce (WP 6.9 / WC 10.6 / Elementor) | No (SSR) | ✅ MKD | schema `InStock` + WC Store API | ⚠️ binary (qty mgmt off; `max=""`) | ❌ not exposed | CookieYes banner | **FireCrawl** (+ WC Store API) |
-| 4 | **Saat&Saat** | Custom (`/en/product/…`, JSON-LD) | No (SSR) | ✅ MKD | schema `InStock` / `OutOfStock` | ❌ binary | ❌ not exposed | none | **FireCrawl** |
+| 4 | **Saat&Saat** | Custom Next.js (`/en/product/…`) | No (SSR) | ✅ MKD | **explicit "N in stock" count** + schema availability | ✅ **exact count** (samples = 1) | ❌ not exposed (single aggregate count) | none | **FireCrawl** |
 | 5 | **Hronometar** | nopCommerce (.NET) | No (SSR) | ✅ MKD | nopCommerce availability (In stock) | ❌ binary | ❌ not exposed | CookieYes banner | **FireCrawl** |
 | 6 | **Pandora** ⚠️ monobrand | Magento 2 | No (SSR) | ✅ MKD | Magento availability `In/OutOfStock` | ❌ binary | ❌ store-locator = addresses only | none | **FireCrawl** |
 | 7 | **Swarovski** ⚠️ monobrand | Custom (`/p/{id}`, `/c/{id}`; royalhouse.mk) | No (SSR) | ✅ MKD | OG `product:availability` + `data-stock` | ⚠️ qty `max="10"` looks like a generic cap — treat binary until verified | ❌ not exposed | none | **FireCrawl** |
@@ -41,11 +41,11 @@ MY:TIME's own catalog is **not** crawled; it comes from the Adform XML feed (`MY
 
 | Tier | Sites | Inference the engine can make |
 |---|---|---|
-| **A — unit-level** | B-Watch, Bozinovski | Day-over-day change in exact stock count → **estimated units sold** (the strongest signal). Plus assortment & price. |
-| **B — availability + assortment** | Watch Club, Saat&Saat, Hronometar, Pandora, Zia, Swarovski | `InStock → OutOfStock` transitions and SKU appear/disappear → **a unit sold-out / restock event** (not a precise count). Watch Club additionally gets a partial count when WC `low_stock_remaining` fires. Plus full price tracking. |
+| **A — exact count** | B-Watch, Bozinovski, Saat&Saat | Day-over-day change in the exact stock count → **estimated units sold** (the strongest signal). Plus assortment & price. |
+| **B — assumed 1 unit** | Watch Club, Hronometar, Pandora, Zia, Swarovski | No public count → **quantity assumed = 1**: an `InStock → OutOfStock` flip or a SKU disappearing = 1 *estimated* unit sold (flagged assumed, not counted). Watch Club gets a partial real count when WC `low_stock_remaining` fires. Plus full price tracking. |
 | **All** | all 8 | Full **assortment** (catalog membership over time) and **price** time-series regardless of stock granularity. |
 
-This is the degradation the brief asked to flag: for Tier-B sites, "units sold" is an availability-event estimate, not a counted depletion, and must be labeled as such in tool outputs.
+**Modeling convention (agreed):** every inferred unit carries a `qty_basis` of **`exact`** (Tier A — measured count delta) or **`assumed`** (Tier B — 1 unit per availability/disappearance event). Tool outputs label assumed figures as estimates, and Phase 2's schema stores this flag so Tier-A and Tier-B numbers are never silently mixed.
 
 ---
 
@@ -66,6 +66,7 @@ This is the degradation the brief asked to flag: for Tier-B sites, "units sold" 
 
 - **All 8:** product id/slug, name, URL, price (MKD), `in_stock` boolean, first-seen / last-seen (for assortment), product image.
 - **B-Watch, Bozinovski:** + exact `stock_quantity` (from qty `max`), + `low_stock_remaining`.
+- **Saat&Saat:** + exact `stock_quantity` (from the rendered "N in stock" count).
 - **Watch Club:** + `low_stock_remaining` (only when low).
 - **Pandora, Swarovski:** monobrand → depletion reflects demand for a single brand only (flag in outputs).
 
