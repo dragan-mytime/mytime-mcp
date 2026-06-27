@@ -17,6 +17,11 @@ export const webSchema = z
     enabled: z.boolean(),
     url: z.string().url().optional(),
     source: z.enum(["apify", "firecrawl", "xml_feed"]).nullable().optional(),
+    // Storefront platform — routes the right collector. Set in Phase 1 profiling.
+    platform: z
+      .enum(["woocommerce", "magento", "nopcommerce", "custom", "xml_feed"])
+      .nullable()
+      .optional(),
     feed_env: z.string().optional(),
     monobrand: z.boolean().optional().default(false),
     per_location_stock: z.boolean().nullable().optional(),

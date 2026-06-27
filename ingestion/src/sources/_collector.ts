@@ -1,4 +1,4 @@
-import type { Target } from "@mytime/shared";
+import type { ProductObservation, Target } from "@mytime/shared";
 
 /** Context handed to every collector for a single run. */
 export interface CollectorContext {
@@ -9,23 +9,21 @@ export interface CollectorContext {
 }
 
 /**
- * A normalized observation ready for the routing/transform layer. Phase 3
- * defines concrete row shapes (inventory, price, social) per writer.
+ * The interface every product (web/feed) source implements. This is the
+ * contract that makes sources bolt-on: adding a source = a new file
+ * implementing ProductCollector + (its table already exists) + a new MCP tool.
+ * No existing source is ever edited; the runner iterates the registry with
+ * per-source failure isolation.
+ *
+ * (Social collectors arrive in steps E/F with their own observation shape.)
  */
-export type NormalizedRow = Record<string, unknown>;
-
-/**
- * The single interface every data source implements. This is the contract that
- * makes sources bolt-on: adding a source = a new file implementing Collector
- * + a new table + a new MCP tool. No existing source is ever edited.
- */
-export interface Collector {
-  /** Unique, stable id, e.g. "mytime-xml-feed", "apify-bwatch-web". */
+export interface ProductCollector {
+  /** Unique, stable id, e.g. "mytime-xml-feed", "woocommerce-store-api". */
   readonly id: string;
-  /** Human label for logs/run summary. */
+  /** Human label for logs / run summary. */
   readonly label: string;
-  /** Whether this collector runs for a given target (filter from config). */
+  /** Whether this collector runs for a given target (routed by config). */
   appliesTo(target: Target): boolean;
   /** Fetch + normalize. MUST be idempotent for a given (target, runDate). */
-  collect(ctx: CollectorContext): Promise<NormalizedRow[]>;
+  collect(ctx: CollectorContext): Promise<ProductObservation[]>;
 }

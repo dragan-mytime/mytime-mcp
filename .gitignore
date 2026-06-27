@@ -20,3 +20,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# local dry-run harness (not committed)
+_dry*.mjs

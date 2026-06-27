@@ -14,7 +14,8 @@
         "feed_env": "MYTIME_FEED_URL",
         "monobrand": false,
         "per_location_stock": null,
-        "locations": []
+        "locations": [],
+        "platform": "xml_feed"
       },
       "social": {
         "instagram": "https://www.instagram.com/mytime.mk/",
@@ -36,7 +37,8 @@
         "source": "firecrawl",
         "monobrand": false,
         "per_location_stock": false,
-        "locations": []
+        "locations": [],
+        "platform": "woocommerce"
       },
       "social": {
         "instagram": "https://www.instagram.com/bwatchshop/",
@@ -58,7 +60,8 @@
         "source": "firecrawl",
         "monobrand": false,
         "per_location_stock": false,
-        "locations": []
+        "locations": [],
+        "platform": "woocommerce"
       },
       "social": {
         "instagram": "https://www.instagram.com/bozinovski_official/",
@@ -80,7 +83,8 @@
         "source": "firecrawl",
         "monobrand": false,
         "per_location_stock": false,
-        "locations": []
+        "locations": [],
+        "platform": "custom"
       },
       "social": {
         "instagram": "https://www.instagram.com/saatvesaat.mk/",
@@ -101,7 +105,8 @@
         "source": "firecrawl",
         "monobrand": false,
         "per_location_stock": false,
-        "locations": []
+        "locations": [],
+        "platform": "nopcommerce"
       },
       "social": {
         "instagram": "https://www.instagram.com/hronometar",
@@ -122,7 +127,8 @@
         "source": "firecrawl",
         "monobrand": false,
         "per_location_stock": false,
-        "locations": []
+        "locations": [],
+        "platform": "woocommerce"
       },
       "social": {
         "instagram": "https://www.instagram.com/watchclubskopje",
@@ -143,7 +149,8 @@
         "source": "firecrawl",
         "monobrand": false,
         "per_location_stock": false,
-        "locations": []
+        "locations": [],
+        "platform": "custom"
       },
       "social": {
         "instagram": "https://www.instagram.com/zia__official/",
@@ -165,7 +172,8 @@
         "source": "firecrawl",
         "monobrand": true,
         "per_location_stock": false,
-        "locations": []
+        "locations": [],
+        "platform": "magento"
       },
       "social": {},
       "registry": {
@@ -183,7 +191,8 @@
         "source": "firecrawl",
         "monobrand": true,
         "per_location_stock": false,
-        "locations": []
+        "locations": [],
+        "platform": "custom"
       },
       "social": {
         "instagram": "https://www.instagram.com/swarovski_retailer_macedonia",

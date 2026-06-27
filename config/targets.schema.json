@@ -56,6 +56,11 @@
           "enum": ["apify", "firecrawl", "xml_feed", null],
           "description": "Collection method. Competitors: apify|firecrawl (chosen in Phase 1). MY:TIME: xml_feed."
         },
+        "platform": {
+          "type": ["string", "null"],
+          "enum": ["woocommerce", "magento", "nopcommerce", "custom", "xml_feed", null],
+          "description": "Storefront platform; routes the right collector module."
+        },
         "feed_env": {
           "type": "string",
           "description": "For source=xml_feed: name of the env var holding the full feed URL (keeps the secret out of config)."

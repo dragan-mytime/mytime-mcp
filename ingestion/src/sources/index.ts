@@ -1,14 +1,13 @@
-import type { Collector } from "./_collector.js";
+import type { ProductCollector } from "./_collector.js";
+import { mytimeFeedCollector } from "./mytime-feed.js";
+import { woocommerceCollector } from "./woocommerce.js";
 
 /**
- * The collector registry. Phase 3 registers concrete collectors here:
- *   - mytime-xml-feed         (own brand, Adform XML feed)
- *   - apify/firecrawl web     (per crawler-plan.md, one per site)
- *   - own-brand social        (Meta Graph + Google APIs)
- *   - competitor public social (Apify IG/FB/TikTok actors)
+ * Product collector registry. Adding a source = one import + one entry here.
+ * Each collector's `appliesTo` (routed by `web.platform` in config) decides
+ * which targets it runs for.
  *
- * Adding a source means adding ONE import + ONE array entry here — nothing in
- * any other source changes. The runner iterates this list with per-source
- * failure isolation.
+ * Steps D–F add: firecrawl web collectors (magento / nopcommerce / custom),
+ * competitor social (Apify), and own-brand social (Meta/Google).
  */
-export const collectors: Collector[] = [];
+export const productCollectors: ProductCollector[] = [mytimeFeedCollector, woocommerceCollector];

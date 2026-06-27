@@ -1,51 +1,77 @@
 import { fileURLToPath } from "node:url";
-import { loadTargets, logger } from "@mytime/shared";
-import { collectors } from "./sources/index.js";
+import { createDb, ensureTargetAndLocation, recordRun, writeObservations } from "@mytime/db";
+import { loadTargets, logger, requireEnv } from "@mytime/shared";
+import { productCollectors } from "./sources/index.js";
 
 export interface RunSummary {
   runDate: string;
   attempted: number;
   succeeded: number;
   failed: number;
+  rows: number;
   failures: { collector: string; target: string; error: string }[];
 }
 
+const today = (): string => new Date().toISOString().slice(0, 10);
+
 /**
- * Daily ingestion run. Phase 3 wires the routing/transform/write layer; this
- * scaffold already enforces the cross-cutting requirements: a UTC date stamp
- * for every run and per-source failure isolation (one collector throwing logs
- * and continues — it never aborts the others).
+ * Daily ingestion run. Per (collector × applicable target):
+ *   ensure target+location → collect → idempotent write → log to ingestion_runs.
+ * Per-source failure isolation: one collector throwing logs and continues — it
+ * never aborts the others. Re-running the same day upserts, never duplicates.
  */
 export async function run(
-  runDate: string = new Date().toISOString().slice(0, 10),
+  runDate: string = today(),
   targetsPath = "config/targets.json",
 ): Promise<RunSummary> {
+  const db = createDb(requireEnv("DATABASE_URL"));
   const targets = loadTargets(targetsPath);
   const summary: RunSummary = {
     runDate,
     attempted: 0,
     succeeded: 0,
     failed: 0,
+    rows: 0,
     failures: [],
   };
 
   logger.info(
-    { runDate, collectors: collectors.length, targets: targets.length },
+    { runDate, collectors: productCollectors.length, targets: targets.length },
     "ingestion run starting",
   );
 
-  for (const collector of collectors) {
+  for (const collector of productCollectors) {
     for (const target of targets.filter((t) => collector.appliesTo(t))) {
       summary.attempted++;
+      const startedAt = new Date();
       try {
-        const rows = await collector.collect({ target, runDate });
-        // Phase 3: route → normalize → dedupe → write (idempotent per (entity, date)).
-        logger.info({ collector: collector.id, target: target.id, rows: rows.length }, "collected");
+        const locationId = await ensureTargetAndLocation(db, target);
+        const obs = await collector.collect({ target, runDate });
+        const rows = await writeObservations(db, target, locationId, runDate, collector.id, obs);
         summary.succeeded++;
+        summary.rows += rows;
+        await recordRun(db, {
+          runDate,
+          collector: collector.id,
+          targetId: target.id,
+          status: "success",
+          rowsWritten: rows,
+          startedAt,
+        });
+        logger.info({ collector: collector.id, target: target.id, rows }, "collected");
       } catch (err) {
-        const error = err instanceof Error ? err.message : String(err);
         summary.failed++;
+        const error = err instanceof Error ? err.message : String(err);
         summary.failures.push({ collector: collector.id, target: target.id, error });
+        await recordRun(db, {
+          runDate,
+          collector: collector.id,
+          targetId: target.id,
+          status: "failed",
+          rowsWritten: 0,
+          error,
+          startedAt,
+        }).catch(() => {});
         logger.error(
           { collector: collector.id, target: target.id, err },
           "collector failed (isolated)",
@@ -54,11 +80,10 @@ export async function run(
     }
   }
 
-  logger.info({ ...summary }, "ingestion run complete");
+  logger.info({ ...summary, failures: summary.failures.length }, "ingestion run complete");
   return summary;
 }
 
-// Run when invoked directly (cross-platform entrypoint check).
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   run().catch((err) => {
     logger.error({ err }, "fatal ingestion error");

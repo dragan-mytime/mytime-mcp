@@ -9,8 +9,8 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@mytime/db": "workspace:*",
     "@mytime/shared": "workspace:*",
-    "@mytime/db": "workspace:*"
-  },
-  "devDependencies": {}
+    "fast-xml-parser": "^5.9.3"
+  }
 }
