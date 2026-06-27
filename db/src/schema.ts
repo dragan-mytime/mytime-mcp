@@ -4,6 +4,7 @@ import {
   date,
   index,
   integer,
+  jsonb,
   numeric,
   pgEnum,
   pgTable,
@@ -95,9 +96,15 @@ export const products = pgTable(
     externalId: text("external_id").notNull(), // site SKU / slug / product id
     name: text("name").notNull(),
     brand: text("brand"), // null for monobrand / unknown
+    modelRef: text("model_ref"), // manufacturer reference, e.g. "PXW453-04" — cross-competitor match key
     category: text("category"),
+    gender: text("gender"), // normalized in ingestion: mens | womens | unisex | kids | null
+    collection: text("collection"),
     url: text("url"),
     imageUrl: text("image_url"),
+    // Optional, site-dependent watch/jewelry attributes (material, movement, case_size, …).
+    // JSONB keeps these modular — a new attribute never needs a migration.
+    attributes: jsonb("attributes"),
     currency: text("currency").notNull().default("MKD"),
     firstSeenDate: date("first_seen_date").notNull(),
     lastSeenDate: date("last_seen_date").notNull(),
@@ -107,6 +114,7 @@ export const products = pgTable(
   (t) => [
     uniqueIndex("products_target_external_uq").on(t.targetId, t.externalId),
     index("products_target_idx").on(t.targetId),
+    index("products_model_ref_idx").on(t.modelRef), // cross-competitor head-to-head matching
   ],
 );
 
@@ -151,8 +159,9 @@ export const prices = pgTable(
       .notNull()
       .references(() => products.id, { onDelete: "cascade" }),
     capturedDate: date("captured_date").notNull(),
-    price: numeric("price", { precision: 12, scale: 2 }).notNull(),
-    salePrice: numeric("sale_price", { precision: 12, scale: 2 }),
+    price: numeric("price", { precision: 12, scale: 2 }).notNull(), // regular / list price
+    salePrice: numeric("sale_price", { precision: 12, scale: 2 }), // discounted price when on sale
+    discountPct: numeric("discount_pct", { precision: 5, scale: 2 }), // (price-sale)/price*100, when on sale
     currency: text("currency").notNull().default("MKD"),
     source: text("source").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -59,9 +59,9 @@ per-day idempotency. Run `pnpm db:migrate` against Supabase to apply.
 |---|---|---|---|
 | `targets` | entity | `id` | mirrors `config/targets.json` |
 | `locations` | target × store | `(target_id, code)` | one `online` row per web target; per-store seam |
-| `products` | target × SKU | `(target_id, external_id)` | `first_seen`/`last_seen` drive assortment |
+| `products` | target × SKU | `(target_id, external_id)` | `brand`, `model_ref`, `category`, `gender`, `collection`, `attributes` (JSONB); `first_seen`/`last_seen` drive assortment |
 | `inventory_snapshots` | product × location × day | `(product_id, location_id, captured_date)` | `stock_status`, exact `stock_quantity` (nullable), `qty_basis` |
-| `prices` | product × day | `(product_id, captured_date)` | tracked independently of stock |
+| `prices` | product × day | `(product_id, captured_date)` | `price`, `sale_price`, `discount_pct` — tracked independently of stock |
 | `social_accounts` | target × platform | `(target_id, platform)` | public competitors / official own brand |
 | `social_metrics` | account × day × metric | `(social_account_id, captured_date, metric)` | long format → new metric = new row, no migration |
 | `authorized_users` | user | `email` (PK) | managed in the Supabase table editor |
@@ -71,6 +71,16 @@ per-day idempotency. Run `pnpm db:migrate` against Supabase to apply.
 ### Enums
 
 `role` · `web_source` · `stock_status` · `qty_basis (exact|assumed|unknown)` · `social_platform`
+
+### Product attributes captured (beyond stock)
+
+Identity (`name`, `external_id`/SKU, `brand`, **`model_ref`** for cross-competitor
+head-to-head matching), segmentation (`category`, `gender`, `collection`), media
+(`url`, `image_url`), site-specific watch/jewelry fields in `attributes` (JSONB:
+material, movement, case size, …), and a daily price series (`price`,
+`sale_price`, `discount_pct`). Ratings/reviews were considered but excluded.
+`brand` is normalized in the ingestion layer so `compare_market_share` aggregates
+correctly.
 
 ### Depletion data model
 

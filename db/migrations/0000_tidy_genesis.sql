@@ -51,6 +51,7 @@ CREATE TABLE "prices" (
 	"captured_date" date NOT NULL,
 	"price" numeric(12, 2) NOT NULL,
 	"sale_price" numeric(12, 2),
+	"discount_pct" numeric(5, 2),
 	"currency" text DEFAULT 'MKD' NOT NULL,
 	"source" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
@@ -62,9 +63,13 @@ CREATE TABLE "products" (
 	"external_id" text NOT NULL,
 	"name" text NOT NULL,
 	"brand" text,
+	"model_ref" text,
 	"category" text,
+	"gender" text,
+	"collection" text,
 	"url" text,
 	"image_url" text,
+	"attributes" jsonb,
 	"currency" text DEFAULT 'MKD' NOT NULL,
 	"first_seen_date" date NOT NULL,
 	"last_seen_date" date NOT NULL,
@@ -140,6 +145,7 @@ CREATE UNIQUE INDEX "prices_product_date_uq" ON "prices" USING btree ("product_i
 CREATE INDEX "prices_product_date_idx" ON "prices" USING btree ("product_id","captured_date");--> statement-breakpoint
 CREATE UNIQUE INDEX "products_target_external_uq" ON "products" USING btree ("target_id","external_id");--> statement-breakpoint
 CREATE INDEX "products_target_idx" ON "products" USING btree ("target_id");--> statement-breakpoint
+CREATE INDEX "products_model_ref_idx" ON "products" USING btree ("model_ref");--> statement-breakpoint
 CREATE UNIQUE INDEX "registry_target_year_uq" ON "registry_financials" USING btree ("target_id","fiscal_year");--> statement-breakpoint
 CREATE UNIQUE INDEX "social_accounts_target_platform_uq" ON "social_accounts" USING btree ("target_id","platform");--> statement-breakpoint
 CREATE UNIQUE INDEX "social_metrics_account_date_metric_uq" ON "social_metrics" USING btree ("social_account_id","captured_date","metric");--> statement-breakpoint

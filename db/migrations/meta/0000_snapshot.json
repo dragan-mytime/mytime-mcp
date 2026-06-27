@@ -1,5 +1,5 @@
 {
-  "id": "f5d6d315-19a5-4945-a529-e3bcdc12f2a7",
+  "id": "ae051a2a-f3dd-4f9b-9c54-20438b7ef3e8",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -465,6 +465,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "discount_pct": {
+          "name": "discount_pct",
+          "type": "numeric(5, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "currency": {
           "name": "currency",
           "type": "text",
@@ -586,8 +592,26 @@
           "primaryKey": false,
           "notNull": false
         },
+        "model_ref": {
+          "name": "model_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "category": {
           "name": "category",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "gender": {
+          "name": "gender",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "collection": {
+          "name": "collection",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -601,6 +625,12 @@
         "image_url": {
           "name": "image_url",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "attributes": {
+          "name": "attributes",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
@@ -665,6 +695,21 @@
           "columns": [
             {
               "expression": "target_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "products_model_ref_idx": {
+          "name": "products_model_ref_idx",
+          "columns": [
+            {
+              "expression": "model_ref",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
