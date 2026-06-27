@@ -82,6 +82,30 @@ material, movement, case size, …), and a daily price series (`price`,
 `brand` is normalized in the ingestion layer so `compare_market_share` aggregates
 correctly.
 
+### Legacy scraper parity (comparability)
+
+Every data point from the existing scraper export maps into this schema, so the
+two datasets stay comparable:
+
+| Legacy field | This schema |
+|---|---|
+| `created` | `inventory_snapshots.created_at` (+ `captured_date`) |
+| `vendor` | `targets.web_url` / `target_id` |
+| `brand` | `products.brand` |
+| `model` | `products.name` |
+| `code` | `products.external_id` / `products.model_ref` |
+| `type` | `products.category` |
+| `in stock` | `inventory_snapshots.stock_status` (TRUE→`in_stock`, FALSE→`out_of_stock`) |
+| `gender` | `products.gender` (`UNKNOWN`→`null`) |
+| `price` | `prices.price` |
+| `discounted price` | `prices.sale_price` (legacy `0`→`null`) |
+| `discount` | `prices.discount_amount` |
+| `discount %` | `prices.discount_pct` |
+| `locations` | `inventory_snapshots.in_stock_locations` |
+| `locations count` | `inventory_snapshots.locations_count` |
+| `image` | `products.image_url` |
+| `link` | `products.url` |
+
 ### Depletion data model
 
 `inventory_snapshots.qty_basis` carries the Phase 1 convention: `exact` when a

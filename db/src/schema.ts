@@ -136,6 +136,10 @@ export const inventorySnapshots = pgTable(
     stockStatus: stockStatusEnum("stock_status").notNull(),
     stockQuantity: integer("stock_quantity"), // exact count when available, else null
     qtyBasis: qtyBasisEnum("qty_basis").notNull().default("unknown"),
+    // Per-store availability (legacy parity: "locations" + "locations count").
+    // 0 / null where a site exposes no per-physical-store stock (the current reality).
+    locationsCount: integer("locations_count").notNull().default(0),
+    inStockLocations: jsonb("in_stock_locations"), // list of location identifiers in stock
     source: text("source").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -161,6 +165,7 @@ export const prices = pgTable(
     capturedDate: date("captured_date").notNull(),
     price: numeric("price", { precision: 12, scale: 2 }).notNull(), // regular / list price
     salePrice: numeric("sale_price", { precision: 12, scale: 2 }), // discounted price when on sale
+    discountAmount: numeric("discount_amount", { precision: 12, scale: 2 }), // absolute money off (price - sale_price)
     discountPct: numeric("discount_pct", { precision: 5, scale: 2 }), // (price-sale)/price*100, when on sale
     currency: text("currency").notNull().default("MKD"),
     source: text("source").notNull(),

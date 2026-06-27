@@ -1,5 +1,5 @@
 {
-  "id": "ae051a2a-f3dd-4f9b-9c54-20438b7ef3e8",
+  "id": "ceff1df7-a149-4f9c-837f-cc75bd896627",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -228,6 +228,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'unknown'"
+        },
+        "locations_count": {
+          "name": "locations_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "in_stock_locations": {
+          "name": "in_stock_locations",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         },
         "source": {
           "name": "source",
@@ -461,6 +474,12 @@
         },
         "sale_price": {
           "name": "sale_price",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "discount_amount": {
+          "name": "discount_amount",
           "type": "numeric(12, 2)",
           "primaryKey": false,
           "notNull": false

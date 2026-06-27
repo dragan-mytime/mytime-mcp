@@ -32,6 +32,8 @@ CREATE TABLE "inventory_snapshots" (
 	"stock_status" "stock_status" NOT NULL,
 	"stock_quantity" integer,
 	"qty_basis" "qty_basis" DEFAULT 'unknown' NOT NULL,
+	"locations_count" integer DEFAULT 0 NOT NULL,
+	"in_stock_locations" jsonb,
 	"source" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
@@ -51,6 +53,7 @@ CREATE TABLE "prices" (
 	"captured_date" date NOT NULL,
 	"price" numeric(12, 2) NOT NULL,
 	"sale_price" numeric(12, 2),
+	"discount_amount" numeric(12, 2),
 	"discount_pct" numeric(5, 2),
 	"currency" text DEFAULT 'MKD' NOT NULL,
 	"source" text NOT NULL,
