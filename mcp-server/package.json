@@ -1,0 +1,16 @@
+{
+  "name": "@mytime/mcp-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@mytime/shared": "workspace:*",
+    "@mytime/db": "workspace:*"
+  },
+  "devDependencies": {}
+}

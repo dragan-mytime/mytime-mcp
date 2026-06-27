@@ -1,0 +1,193 @@
+{
+  "$schema": "./targets.schema.json",
+  "_note": "Placeholder social URLs (REPLACE-*) and per-site crawler choices must be filled in. Per the brief: Instagram is present for all competitors except Pandora; Facebook is present for 8 of 9 competitors (remove the one that does not apply); TikTok only for B-Watch, Bozinovski, Zia, and MY:TIME. `web.source` and `per_location_stock` are decided during Phase 1 profiling.",
+  "targets": [
+    {
+      "id": "mytime",
+      "name": "MY:TIME",
+      "legal_entity": "ВОЧ ИД ДОО",
+      "is_self": true,
+      "web": {
+        "enabled": true,
+        "url": "https://www.mytime.mk",
+        "source": "xml_feed",
+        "feed_env": "MYTIME_FEED_URL",
+        "monobrand": false,
+        "per_location_stock": null,
+        "locations": []
+      },
+      "social": {
+        "instagram": "https://instagram.com/REPLACE-mytime",
+        "facebook": "https://facebook.com/REPLACE-mytime",
+        "tiktok": "https://tiktok.com/@REPLACE-mytime"
+      },
+      "registry": { "central_registry_id": null }
+    },
+    {
+      "id": "b-watch",
+      "name": "B-Watch",
+      "legal_entity": "Б-ВОЧ ДОО",
+      "is_self": false,
+      "web": {
+        "enabled": true,
+        "url": "https://REPLACE-b-watch",
+        "source": null,
+        "monobrand": false,
+        "per_location_stock": null,
+        "locations": []
+      },
+      "social": {
+        "instagram": "https://instagram.com/REPLACE-b-watch",
+        "facebook": "https://facebook.com/REPLACE-b-watch",
+        "tiktok": "https://tiktok.com/@REPLACE-b-watch"
+      },
+      "registry": { "central_registry_id": null }
+    },
+    {
+      "id": "bozinovski",
+      "name": "Bozinovski",
+      "legal_entity": "БИСЕРА КОМЕРЦ ДООЕЛ",
+      "is_self": false,
+      "web": {
+        "enabled": true,
+        "url": "https://REPLACE-bozinovski",
+        "source": null,
+        "monobrand": false,
+        "per_location_stock": null,
+        "locations": []
+      },
+      "social": {
+        "instagram": "https://instagram.com/REPLACE-bozinovski",
+        "facebook": "https://facebook.com/REPLACE-bozinovski",
+        "tiktok": "https://tiktok.com/@REPLACE-bozinovski"
+      },
+      "registry": { "central_registry_id": null }
+    },
+    {
+      "id": "saat-saat",
+      "name": "Saat&Saat",
+      "legal_entity": "ЕГО ВОТЧ ДОО",
+      "is_self": false,
+      "web": {
+        "enabled": true,
+        "url": "https://REPLACE-saat-saat",
+        "source": null,
+        "monobrand": false,
+        "per_location_stock": null,
+        "locations": []
+      },
+      "social": {
+        "instagram": "https://instagram.com/REPLACE-saat-saat",
+        "facebook": "https://facebook.com/REPLACE-saat-saat"
+      },
+      "registry": { "central_registry_id": null }
+    },
+    {
+      "id": "hronometar",
+      "name": "Hronometar",
+      "legal_entity": "МЕГАЛ ДООЕЛ",
+      "is_self": false,
+      "web": {
+        "enabled": true,
+        "url": "https://REPLACE-hronometar",
+        "source": null,
+        "monobrand": false,
+        "per_location_stock": null,
+        "locations": []
+      },
+      "social": {
+        "instagram": "https://instagram.com/REPLACE-hronometar",
+        "facebook": "https://facebook.com/REPLACE-hronometar"
+      },
+      "registry": { "central_registry_id": null }
+    },
+    {
+      "id": "watch-club",
+      "name": "Watch Club",
+      "legal_entity": "ВОЧ КЛУБ ДООЕЛ",
+      "is_self": false,
+      "web": {
+        "enabled": true,
+        "url": "https://REPLACE-watch-club",
+        "source": null,
+        "monobrand": false,
+        "per_location_stock": null,
+        "locations": []
+      },
+      "social": {
+        "instagram": "https://instagram.com/REPLACE-watch-club",
+        "facebook": "https://facebook.com/REPLACE-watch-club"
+      },
+      "registry": { "central_registry_id": null }
+    },
+    {
+      "id": "zia",
+      "name": "Zia",
+      "legal_entity": "ЕЛ ДОРАДО 05 ДОО",
+      "is_self": false,
+      "web": {
+        "enabled": true,
+        "url": "https://REPLACE-zia",
+        "source": null,
+        "monobrand": false,
+        "per_location_stock": null,
+        "locations": []
+      },
+      "social": {
+        "instagram": "https://instagram.com/REPLACE-zia",
+        "facebook": "https://facebook.com/REPLACE-zia",
+        "tiktok": "https://tiktok.com/@REPLACE-zia"
+      },
+      "registry": { "central_registry_id": null }
+    },
+    {
+      "id": "pandora",
+      "name": "Pandora",
+      "legal_entity": "СФ1 КЛИПС ДООЕЛ",
+      "is_self": false,
+      "web": {
+        "enabled": true,
+        "url": "https://REPLACE-pandora",
+        "source": null,
+        "monobrand": true,
+        "per_location_stock": null,
+        "locations": []
+      },
+      "social": {
+        "facebook": "https://facebook.com/REPLACE-pandora"
+      },
+      "registry": { "central_registry_id": null }
+    },
+    {
+      "id": "swarovski",
+      "name": "Swarovski",
+      "legal_entity": "РОЈАЛЕ ХОУСЕ ДООЕЛ",
+      "is_self": false,
+      "web": {
+        "enabled": true,
+        "url": "https://REPLACE-swarovski",
+        "source": null,
+        "monobrand": true,
+        "per_location_stock": null,
+        "locations": []
+      },
+      "social": {
+        "instagram": "https://instagram.com/REPLACE-swarovski",
+        "facebook": "https://facebook.com/REPLACE-swarovski"
+      },
+      "registry": { "central_registry_id": null }
+    },
+    {
+      "id": "chapter-03",
+      "name": "Chapter 03",
+      "legal_entity": "КОНЦЕПТ ТРЕЈД ОНЕ ДООЕЛ",
+      "is_self": false,
+      "web": { "enabled": false },
+      "social": {
+        "instagram": "https://instagram.com/REPLACE-chapter-03",
+        "facebook": "https://facebook.com/REPLACE-chapter-03"
+      },
+      "registry": { "central_registry_id": null }
+    }
+  ]
+}

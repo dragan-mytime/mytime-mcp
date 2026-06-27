@@ -1,0 +1,6 @@
+# Normalize line endings to LF in the repo; check out native on each OS.
+* text=auto eol=lf
+
+# Keep lockfiles and JSON stable as LF.
+pnpm-lock.yaml text eol=lf
+*.json text eol=lf

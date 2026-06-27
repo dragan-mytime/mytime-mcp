@@ -1,0 +1,9 @@
+packages:
+  - shared
+  - db
+  - ingestion
+  - mcp-server
+# esbuild is a drizzle-kit subdependency; allow its install script so the
+# native binary is set up for `pnpm db:generate` / `db:migrate`.
+allowBuilds:
+  esbuild: true

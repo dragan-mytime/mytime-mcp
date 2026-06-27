@@ -1,0 +1,98 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://my.mk/schemas/targets.schema.json",
+  "title": "MY:TIME competitive-intelligence targets",
+  "description": "Single source of truth for who is tracked and how. Read at runtime; never hardcode targets.",
+  "type": "object",
+  "required": ["targets"],
+  "additionalProperties": true,
+  "properties": {
+    "$schema": { "type": "string" },
+    "_note": { "type": "string" },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/target" }
+    }
+  },
+  "definitions": {
+    "target": {
+      "type": "object",
+      "required": ["id", "name", "legal_entity", "web"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$",
+          "description": "Stable slug; used as the foreign key everywhere downstream."
+        },
+        "name": { "type": "string" },
+        "legal_entity": {
+          "type": "string",
+          "description": "Registered legal entity (Cyrillic). Ground-truth key for registry_financials."
+        },
+        "is_self": {
+          "type": "boolean",
+          "default": false,
+          "description": "true = MY:TIME's own brand (uses official APIs + the XML feed); false = competitor (public scrapers only)."
+        },
+        "web": { "$ref": "#/definitions/web" },
+        "social": { "$ref": "#/definitions/social" },
+        "registry": { "$ref": "#/definitions/registry" }
+      }
+    },
+    "web": {
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "false = no website; excluded from the depletion engine (e.g. Chapter 03)."
+        },
+        "url": { "type": "string", "format": "uri" },
+        "source": {
+          "type": ["string", "null"],
+          "enum": ["apify", "firecrawl", "xml_feed", null],
+          "description": "Collection method. Competitors: apify|firecrawl (chosen in Phase 1). MY:TIME: xml_feed."
+        },
+        "feed_env": {
+          "type": "string",
+          "description": "For source=xml_feed: name of the env var holding the full feed URL (keeps the secret out of config)."
+        },
+        "monobrand": {
+          "type": "boolean",
+          "default": false,
+          "description": "true = single-brand franchise (Pandora/Swarovski); depletion reflects demand for that one brand only."
+        },
+        "per_location_stock": {
+          "type": ["boolean", "null"],
+          "description": "Whether per-location stock is exposed. null until profiled. false = depletion degrades to price/assortment tracking."
+        },
+        "locations": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Discovered location identifiers, if the site exposes per-location availability."
+        }
+      }
+    },
+    "social": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A platform key is present only where a public handle exists. Competitors: public metrics only.",
+      "properties": {
+        "instagram": { "type": "string", "format": "uri" },
+        "facebook": { "type": "string", "format": "uri" },
+        "tiktok": { "type": "string", "format": "uri" }
+      }
+    },
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Seam for Macedonian Central Registry (Централен регистар) financials. Not scraped yet.",
+      "properties": {
+        "central_registry_id": { "type": ["string", "null"] }
+      }
+    }
+  }
+}
