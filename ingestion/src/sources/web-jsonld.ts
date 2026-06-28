@@ -9,7 +9,7 @@ import {
 } from "../pipeline/normalize.js";
 import type { CollectorContext, ProductCollector } from "./_collector.js";
 
-const UA = "MyTimeBI/1.0 (+https://mcp.my.mk)";
+const UA = "MyTimeBI/1.0 (+https://mcp.mytimeprime.mk)";
 const CONCURRENCY = 6;
 
 /**

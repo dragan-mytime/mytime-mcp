@@ -87,7 +87,7 @@ export const mytimeFeedCollector: ProductCollector = {
   appliesTo: (t) => t.is_self && t.web.platform === "xml_feed",
   async collect(_ctx: CollectorContext): Promise<ProductObservation[]> {
     const res = await fetch(requireEnv("MYTIME_FEED_URL"), {
-      headers: { "User-Agent": "MyTimeBI/1.0 (+https://mcp.my.mk)" },
+      headers: { "User-Agent": "MyTimeBI/1.0 (+https://mcp.mytimeprime.mk)" },
       signal: AbortSignal.timeout(120_000),
     });
     if (!res.ok) throw new Error(`MY:TIME feed HTTP ${res.status}`);

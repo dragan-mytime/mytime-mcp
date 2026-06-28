@@ -2,7 +2,7 @@ import { optionalEnv, type ProductObservation } from "@mytime/shared";
 import { cleanText, deriveDiscount, toNumber } from "../pipeline/normalize.js";
 import type { CollectorContext, ProductCollector } from "./_collector.js";
 
-const UA = "MyTimeBI/1.0 (+https://mcp.my.mk)";
+const UA = "MyTimeBI/1.0 (+https://mcp.mytimeprime.mk)";
 const MAX = Number(optionalEnv("WEB_MAX_PRODUCTS", "300"));
 const LISTING = "/mk/proizvodi"; // Magento all-products category (24/page, ?p=N)
 

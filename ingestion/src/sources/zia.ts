@@ -2,7 +2,7 @@ import { optionalEnv, type ProductObservation } from "@mytime/shared";
 import { cleanText, deriveDiscount, normalizeGender } from "../pipeline/normalize.js";
 import type { CollectorContext, ProductCollector } from "./_collector.js";
 
-const UA = "MyTimeBI/1.0 (+https://mcp.my.mk)";
+const UA = "MyTimeBI/1.0 (+https://mcp.mytimeprime.mk)";
 const MAX = Number(optionalEnv("WEB_MAX_PRODUCTS", "300"));
 
 interface ZiaItem {

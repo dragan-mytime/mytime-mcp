@@ -7,7 +7,7 @@ import {
 } from "../pipeline/normalize.js";
 import type { CollectorContext, ProductCollector } from "./_collector.js";
 
-const UA = "MyTimeBI/1.0 (+https://mcp.my.mk)";
+const UA = "MyTimeBI/1.0 (+https://mcp.mytimeprime.mk)";
 const PER_PAGE = 100;
 const MAX_PAGES = 100; // safety cap
 

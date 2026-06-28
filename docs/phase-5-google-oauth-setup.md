@@ -18,7 +18,7 @@ client; I wire the rest (domain gate + allowlist + roles). ~5 minutes.
    - Application type: **Web application**.
    - Name: "MY:TIME MCP".
    - **Authorized redirect URIs** — add both:
-     - `https://mcp.my.mk/auth/google/callback`  (production)
+     - `https://mcp.mytimeprime.mk/auth/google/callback`  (production)
      - `http://localhost:8080/auth/google/callback`  (local testing)
    - Create → copy the **Client ID** and **Client secret**.
 
@@ -27,7 +27,7 @@ client; I wire the rest (domain gate + allowlist + roles). ~5 minutes.
 ```
 GOOGLE_CLIENT_ID=...apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=...
-MCP_PUBLIC_URL=https://mcp.my.mk     # already set; use http://localhost:8080 for local tests
+MCP_PUBLIC_URL=https://mcp.mytimeprime.mk     # already set; use http://localhost:8080 for local tests
 ALLOWED_EMAIL_DOMAIN=mytime.mk       # already set
 # MCP_JWT_SECRET is generated automatically (see below) — keep it secret & stable.
 ```

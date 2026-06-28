@@ -16,7 +16,7 @@ SOURCES      competitor e-commerce sites + social platforms
 COLLECTION   Apify + FireCrawl + official social APIs + MY:TIME XML feed
 INGESTION    Node/TS pipeline — route, normalize, dedupe, date-stamp (modular per source)
 STORAGE      Supabase Postgres (Frankfurt) — single source of truth
-MCP SERVER   remote, Streamable HTTP, https://mcp.my.mk  ← the hub
+MCP SERVER   remote, Streamable HTTP, https://mcp.mytimeprime.mk  ← the hub
 CONSUMERS    Claude · Power BI / dashboards · internal team
 ```
 
