@@ -1,5 +1,6 @@
 import type { ProductCollector } from "./_collector.js";
 import { mytimeFeedCollector } from "./mytime-feed.js";
+import { pandoraCollector } from "./pandora.js";
 import { webJsonLdCollector } from "./web-jsonld.js";
 import { woocommerceCollector } from "./woocommerce.js";
 import { ziaCollector } from "./zia.js";
@@ -17,4 +18,5 @@ export const productCollectors: ProductCollector[] = [
   woocommerceCollector,
   webJsonLdCollector,
   ziaCollector,
+  pandoraCollector,
 ];
