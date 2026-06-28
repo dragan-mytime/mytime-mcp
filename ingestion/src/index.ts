@@ -8,8 +8,8 @@ import {
   writeSocialMetrics,
 } from "@mytime/db";
 import { loadTargets, logger, optionalEnv, requireEnv } from "@mytime/shared";
-import { socialCollectors } from "./social/index.js";
 import { extractHandle } from "./social/_social.js";
+import { socialCollectors } from "./social/index.js";
 import { productCollectors } from "./sources/index.js";
 
 // Optional filters for targeted/manual runs (comma-separated ids).
@@ -103,11 +103,18 @@ export async function run(
     const accounts = targets
       .filter(
         (t) =>
-          !t.is_self && (!onlyTargets || onlyTargets.includes(t.id)) && Boolean(t.social[sc.platform]),
+          !t.is_self &&
+          (!onlyTargets || onlyTargets.includes(t.id)) &&
+          Boolean(t.social[sc.platform]),
       )
       .map((t) => {
         const url = t.social[sc.platform] as string;
-        return { targetId: t.id, platform: sc.platform, url, handle: extractHandle(sc.platform, url) };
+        return {
+          targetId: t.id,
+          platform: sc.platform,
+          url,
+          handle: extractHandle(sc.platform, url),
+        };
       });
     if (accounts.length === 0) continue;
     summary.attempted++;
@@ -123,13 +130,28 @@ export async function run(
       }
       summary.succeeded++;
       summary.rows += rows;
-      await recordRun(db, { runDate, collector: sc.id, targetId: null, status: "success", rowsWritten: rows, startedAt });
+      await recordRun(db, {
+        runDate,
+        collector: sc.id,
+        targetId: null,
+        status: "success",
+        rowsWritten: rows,
+        startedAt,
+      });
       logger.info({ collector: sc.id, accounts: accounts.length, rows }, "social collected");
     } catch (err) {
       summary.failed++;
       const error = err instanceof Error ? err.message : String(err);
       summary.failures.push({ collector: sc.id, target: sc.platform, error });
-      await recordRun(db, { runDate, collector: sc.id, targetId: null, status: "failed", rowsWritten: 0, error, startedAt }).catch(() => {});
+      await recordRun(db, {
+        runDate,
+        collector: sc.id,
+        targetId: null,
+        status: "failed",
+        rowsWritten: 0,
+        error,
+        startedAt,
+      }).catch(() => {});
       logger.error({ collector: sc.id, err }, "social collector failed (isolated)");
     }
   }

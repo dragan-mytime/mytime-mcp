@@ -59,6 +59,6 @@ existing sources. See [ingestion/src/sources/README.md](ingestion/src/sources/RE
 - [ ] **Phase 1 — Site profiling & crawler selection** → `crawler-plan.md`
 - [ ] **Phase 2 — Database schema** (full time-series model + ER diagram)
 - [~] **Phase 3 — Ingestion pipeline** — A–E + G done: idempotent writer; all **9 web sites** live (WC Store API, Adform feed, sitemap+JSON-LD, Zia API, FireCrawl-map+OG, Magento listing, nopCommerce); **competitor social** (Apify IG/FB/TikTok); **daily scheduler** (systemd timer + runbook, see [deploy/](deploy/README.md)). Pending: **F** (own-brand social via Meta/Google official APIs).
-- [ ] **Phase 4 — Demand inference + MCP server core** (4 tools)
+- [x] **Phase 4 — Demand inference + MCP server core** — depletion engine (exact/assumed `qty_basis`) + Streamable HTTP MCP server with 4 tools (`get_inventory_velocity`, `compare_market_share`, `social_benchmark`, `price_assortment`); see [mcp-server/](mcp-server/README.md).
 - [ ] **Phase 5 — OAuth 2.1 + two-layer authorization**
 - [ ] **Phase 6 — Deploy to Hetzner** (Caddy, TLS, daily ingestion)

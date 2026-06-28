@@ -9,8 +9,13 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@mytime/db": "workspace:*",
     "@mytime/shared": "workspace:*",
-    "@mytime/db": "workspace:*"
+    "express": "^5.2.1",
+    "zod": "^4.4.3"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@types/express": "^5.0.6"
+  }
 }

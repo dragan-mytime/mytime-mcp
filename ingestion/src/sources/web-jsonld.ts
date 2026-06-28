@@ -196,7 +196,9 @@ function parseOg(html: string, url: string): ProductObservation | null {
   );
   if (price == null) return null;
   // Strip an OG-title site suffix like " :: Royal House" / " | Site".
-  const name = cleanText(metaContent(html, "og:title")?.replace(/\s*(?:::|\|)\s*[^:|]*$/, "") ?? null);
+  const name = cleanText(
+    metaContent(html, "og:title")?.replace(/\s*(?:::|\|)\s*[^:|]*$/, "") ?? null,
+  );
   const avail = (
     metaContent(html, "product:availability") ??
     metaContent(html, "og:availability") ??

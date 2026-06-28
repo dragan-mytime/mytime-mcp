@@ -12,8 +12,7 @@ export default defineConfig({
   dialect: "postgresql",
   dbCredentials: {
     url: process.env.DATABASE_URL ?? "",
-    ssl:
-      process.env.DATABASE_SSL_NO_VERIFY === "true" ? { rejectUnauthorized: false } : true,
+    ssl: process.env.DATABASE_SSL_NO_VERIFY === "true" ? { rejectUnauthorized: false } : true,
   },
   strict: true,
   verbose: true,
