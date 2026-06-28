@@ -19,16 +19,17 @@ const CONCURRENCY = 6;
  * is the rendering fallback (see fetchHtml) for anything not in the raw HTML.
  */
 interface SiteConfig {
-  sitemap: string;
-  /** Matches product (not category) URLs in the sitemap. */
+  /** Product-URL enumeration source: a sitemap, or FireCrawl map (renders JS grids). */
+  sitemap?: string;
+  firecrawlMap?: boolean;
+  /** Matches product (not category) URLs. */
   productUrl: RegExp;
 }
 const SITES: Record<string, SiteConfig> = {
   "saat-saat": { sitemap: "https://saatandsaat.mk/sitemap.xml", productUrl: /\/product\// },
-  swarovski: { sitemap: "https://royalhouse.mk/sitemap.xml", productUrl: /\/p\/\d+\// },
-  hronometar: { sitemap: "https://www.hronometar.mk/sitemap.xml", productUrl: /\/[a-z0-9-]+-\d+$/ },
-  // pandora (Magento, no sitemap) and zia (thin SPA sitemap) need category/API
-  // enumeration — added in a follow-up; they degrade gracefully (0 rows) here.
+  swarovski: { firecrawlMap: true, productUrl: /\/p\/\d+\// }, // royalhouse.mk — JS grid + OG pages
+  // Remaining: hronometar (nopCommerce) + pandora (Magento) need category-listing
+  // crawls; with no SITES entry they degrade to 0 rows until added.
 };
 
 const MAX = Number(optionalEnv("WEB_MAX_PRODUCTS", "300"));
@@ -74,6 +75,22 @@ async function collectSitemapUrls(sitemap: string, match: RegExp, depth = 0): Pr
     return nested.flat();
   }
   return locs.filter((l) => match.test(l));
+}
+
+/** Enumerate product URLs via FireCrawl map (renders JS) — for JS-grid sites. */
+async function fcMap(siteUrl: string, match: RegExp): Promise<string[]> {
+  const key = optionalEnv("FIRECRAWL_API_KEY");
+  if (!key) throw new Error("FIRECRAWL_API_KEY required for map enumeration");
+  const res = await fetch("https://api.firecrawl.dev/v2/map", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ url: siteUrl, limit: 5000 }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!res.ok) throw new Error(`FireCrawl map HTTP ${res.status}`);
+  const j = (await res.json()) as { links?: (string | { url?: string })[] };
+  const urls = (j.links ?? []).map((l) => (typeof l === "string" ? l : (l.url ?? "")));
+  return [...new Set(urls.filter((u) => match.test(u)))];
 }
 
 interface JsonLd {
@@ -178,7 +195,8 @@ function parseOg(html: string, url: string): ProductObservation | null {
     metaContent(html, "product:price:amount") ?? metaContent(html, "og:price:amount"),
   );
   if (price == null) return null;
-  const name = cleanText(metaContent(html, "og:title"));
+  // Strip an OG-title site suffix like " :: Royal House" / " | Site".
+  const name = cleanText(metaContent(html, "og:title")?.replace(/\s*(?:::|\|)\s*[^:|]*$/, "") ?? null);
   const avail = (
     metaContent(html, "product:availability") ??
     metaContent(html, "og:availability") ??
@@ -238,7 +256,13 @@ export const webJsonLdCollector: ProductCollector = {
   async collect({ target }: CollectorContext): Promise<ProductObservation[]> {
     const cfg = SITES[target.id];
     if (!cfg) return [];
-    const urls = (await collectSitemapUrls(cfg.sitemap, cfg.productUrl)).slice(0, MAX);
+    const base = new URL(target.web.url ?? "").origin;
+    const enumerated = cfg.firecrawlMap
+      ? await fcMap(base, cfg.productUrl)
+      : cfg.sitemap
+        ? await collectSitemapUrls(cfg.sitemap, cfg.productUrl)
+        : [];
+    const urls = enumerated.slice(0, MAX);
     const results = await mapPool(urls, CONCURRENCY, async (url) => {
       try {
         const html = await fetchHtml(url);
