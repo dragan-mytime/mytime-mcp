@@ -1,0 +1,20 @@
+[Unit]
+Description=MY:TIME BI daily ingestion run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Adjust DEPLOY PATH and the node binary to your VPS.
+WorkingDirectory=/opt/mytime-bi
+# The app loads .env from WorkingDirectory (must contain DATABASE_URL etc).
+Environment=NODE_ENV=production
+# No dev cap in production — crawl full catalogs.
+Environment=WEB_MAX_PRODUCTS=100000
+ExecStart=/usr/bin/env node ingestion/dist/index.js
+# One run must never hang forever; per-source failures are isolated in-app.
+TimeoutStartSec=3600
+Nice=10
+# Run as a non-root service user (create it on the VPS).
+User=mytime
+Group=mytime

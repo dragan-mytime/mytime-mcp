@@ -1,0 +1,13 @@
+[Unit]
+Description=Schedule MY:TIME BI ingestion daily
+
+[Timer]
+# Daily at 03:15 server time. Use UTC on the VPS for predictable timing.
+OnCalendar=*-*-* 03:15:00
+# Run a missed job after downtime.
+Persistent=true
+# Spread load / avoid scraping every site at the exact same second.
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target
