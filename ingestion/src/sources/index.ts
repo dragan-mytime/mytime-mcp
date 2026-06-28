@@ -1,5 +1,6 @@
 import type { ProductCollector } from "./_collector.js";
 import { mytimeFeedCollector } from "./mytime-feed.js";
+import { webJsonLdCollector } from "./web-jsonld.js";
 import { woocommerceCollector } from "./woocommerce.js";
 
 /**
@@ -10,4 +11,8 @@ import { woocommerceCollector } from "./woocommerce.js";
  * Steps D–F add: firecrawl web collectors (magento / nopcommerce / custom),
  * competitor social (Apify), and own-brand social (Meta/Google).
  */
-export const productCollectors: ProductCollector[] = [mytimeFeedCollector, woocommerceCollector];
+export const productCollectors: ProductCollector[] = [
+  mytimeFeedCollector,
+  woocommerceCollector,
+  webJsonLdCollector,
+];

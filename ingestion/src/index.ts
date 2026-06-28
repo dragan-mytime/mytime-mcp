@@ -1,7 +1,12 @@
 import { fileURLToPath } from "node:url";
 import { createDb, ensureTargetAndLocation, recordRun, writeObservations } from "@mytime/db";
-import { loadTargets, logger, requireEnv } from "@mytime/shared";
+import { loadTargets, logger, optionalEnv, requireEnv } from "@mytime/shared";
 import { productCollectors } from "./sources/index.js";
+
+// Optional filters for targeted/manual runs (comma-separated ids).
+const csv = (v?: string): string[] | null => (v ? v.split(",").map((s) => s.trim()) : null);
+const onlyCollectors = csv(optionalEnv("INGEST_COLLECTORS"));
+const onlyTargets = csv(optionalEnv("INGEST_TARGETS"));
 
 export interface RunSummary {
   runDate: string;
@@ -41,7 +46,10 @@ export async function run(
   );
 
   for (const collector of productCollectors) {
-    for (const target of targets.filter((t) => collector.appliesTo(t))) {
+    if (onlyCollectors && !onlyCollectors.includes(collector.id)) continue;
+    for (const target of targets.filter(
+      (t) => collector.appliesTo(t) && (!onlyTargets || onlyTargets.includes(t.id)),
+    )) {
       summary.attempted++;
       const startedAt = new Date();
       try {
