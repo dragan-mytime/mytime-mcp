@@ -1,4 +1,4 @@
-import type { ProductObservation, Target } from "@mytime/shared";
+import type { ProductObservation, SocialMetricValue, SocialPlatform, Target } from "@mytime/shared";
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "./index.js";
 import {
@@ -7,6 +7,8 @@ import {
   locations,
   prices,
   products,
+  socialAccounts,
+  socialMetrics,
   targets,
 } from "./schema.js";
 
@@ -191,6 +193,55 @@ export async function writeObservations(
   });
 
   return items.length;
+}
+
+/** Upsert a social account and return its id. */
+export async function ensureSocialAccount(
+  db: Db,
+  targetId: string,
+  platform: SocialPlatform,
+  url: string,
+  handle?: string | null,
+): Promise<string> {
+  await db
+    .insert(socialAccounts)
+    .values({ targetId, platform, url, handle: handle ?? null })
+    .onConflictDoUpdate({
+      target: [socialAccounts.targetId, socialAccounts.platform],
+      set: { url, handle: handle ?? null },
+    });
+  const [row] = await db
+    .select({ id: socialAccounts.id })
+    .from(socialAccounts)
+    .where(and(eq(socialAccounts.targetId, targetId), eq(socialAccounts.platform, platform)));
+  if (!row) throw new Error(`failed to ensure social account ${targetId}/${platform}`);
+  return row.id;
+}
+
+/** Idempotently upsert social metrics (account × date × metric). Returns count written. */
+export async function writeSocialMetrics(
+  db: Db,
+  socialAccountId: string,
+  runDate: string,
+  metrics: SocialMetricValue[],
+  source: string,
+): Promise<number> {
+  if (metrics.length === 0) return 0;
+  const values = metrics.map((m) => ({
+    socialAccountId,
+    capturedDate: runDate,
+    metric: m.metric,
+    value: String(m.value),
+    source,
+  }));
+  await db
+    .insert(socialMetrics)
+    .values(values)
+    .onConflictDoUpdate({
+      target: [socialMetrics.socialAccountId, socialMetrics.capturedDate, socialMetrics.metric],
+      set: { value: sql`excluded.value`, source: sql`excluded.source` },
+    });
+  return metrics.length;
 }
 
 /** Append a row to the ingestion run log (observability / run summary). */
