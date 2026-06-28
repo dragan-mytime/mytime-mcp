@@ -10,6 +10,7 @@ import {
 import { loadTargets, logger, optionalEnv, requireEnv } from "@mytime/shared";
 import { extractHandle } from "./social/_social.js";
 import { socialCollectors } from "./social/index.js";
+import { collectOwnBrandMeta } from "./social/meta-own.js";
 import { productCollectors } from "./sources/index.js";
 
 // Optional filters for targeted/manual runs (comma-separated ids).
@@ -153,6 +154,56 @@ export async function run(
         startedAt,
       }).catch(() => {});
       logger.error({ collector: sc.id, err }, "social collector failed (isolated)");
+    }
+  }
+
+  // ── Own-brand social: MY:TIME via the official Meta Graph API (Step F) ──
+  if (
+    optionalEnv("META_ACCESS_TOKEN") &&
+    (!onlyCollectors || onlyCollectors.includes("meta-own-brand"))
+  ) {
+    const self = targets.find((t) => t.is_self);
+    if (self && (!onlyTargets || onlyTargets.includes(self.id))) {
+      summary.attempted++;
+      const startedAt = new Date();
+      try {
+        const results = await collectOwnBrandMeta();
+        let rows = 0;
+        for (const r of results) {
+          const url = self.social[r.platform];
+          if (!url) continue;
+          const sid = await ensureSocialAccount(db, self.id, r.platform, url);
+          rows += await writeSocialMetrics(db, sid, runDate, r.metrics, "meta-own-brand");
+        }
+        summary.succeeded++;
+        summary.rows += rows;
+        await recordRun(db, {
+          runDate,
+          collector: "meta-own-brand",
+          targetId: self.id,
+          status: "success",
+          rowsWritten: rows,
+          startedAt,
+        });
+        logger.info(
+          { collector: "meta-own-brand", target: self.id, rows },
+          "own-brand social collected",
+        );
+      } catch (err) {
+        summary.failed++;
+        const error = err instanceof Error ? err.message : String(err);
+        summary.failures.push({ collector: "meta-own-brand", target: self.id, error });
+        await recordRun(db, {
+          runDate,
+          collector: "meta-own-brand",
+          targetId: self.id,
+          status: "failed",
+          rowsWritten: 0,
+          error,
+          startedAt,
+        }).catch(() => {});
+        logger.error({ collector: "meta-own-brand", err }, "own-brand social failed (isolated)");
+      }
     }
   }
 
