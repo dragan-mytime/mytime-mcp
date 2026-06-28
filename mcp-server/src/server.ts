@@ -19,7 +19,17 @@ import { tools } from "./tools/index.js";
  * uses the AuthInfo populated by `requireBearerAuth` (role from our JWT).
  */
 export function buildMcpServer(): McpServer {
-  const server = new McpServer({ name: "mytime-mcp", version: "1.0.0" });
+  // Advertise brand identity + icon so icon-aware clients (e.g. Claude) can
+  // render the MY:TIME logo for the connector. The icon is served from this
+  // server's own domain (see /icon.png), satisfying the spec's same-origin rule.
+  const iconUrl = new URL("/icon.png", requireEnv("MCP_PUBLIC_URL")).toString();
+  const server = new McpServer({
+    name: "mytime-mcp",
+    title: "MY:TIME Competitive Intelligence",
+    version: "1.0.0",
+    websiteUrl: "https://www.mytime.mk",
+    icons: [{ src: iconUrl, mimeType: "image/png", sizes: ["512x512"] }],
+  });
   const pool = readPool();
   for (const t of tools) {
     server.registerTool(
@@ -50,6 +60,12 @@ export function createApp(): express.Express {
   const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(issuerUrl);
 
   app.get("/health", (_req, res) => res.json(health()));
+
+  // Public brand icon advertised in serverInfo.icons (no auth — clients fetch it directly).
+  const iconPath = fileURLToPath(new URL("../assets/mcp-icon.png", import.meta.url));
+  app.get("/icon.png", (_req, res) => {
+    res.type("image/png").set("Cache-Control", "public, max-age=86400").sendFile(iconPath);
+  });
 
   // Upstream Google callback → two-layer gate → mint our auth code.
   app.get("/auth/google/callback", async (req, res) => {
