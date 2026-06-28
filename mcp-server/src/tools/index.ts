@@ -5,6 +5,7 @@ import {
   priceAssortment,
   socialBenchmark,
 } from "../analytics.js";
+import { listAuthorizedUsers } from "../auth/authorized-users.js";
 import type { McpToolDef } from "./_tool.js";
 
 /**
@@ -85,5 +86,14 @@ export const tools: McpToolDef[] = [
       brand: z.string().optional().describe("brand name (case-insensitive)"),
     },
     run: (pool, a) => priceAssortment(pool, a as { competitor?: string; brand?: string }),
+  },
+  {
+    name: "list_authorized_users",
+    title: "List authorized users (admin)",
+    description:
+      "List the MCP allowlist (email, role, active). Admin only. Entries are managed in the Supabase table editor.",
+    requiredRole: "admin",
+    inputSchema: {},
+    run: (pool) => listAuthorizedUsers(pool),
   },
 ];
