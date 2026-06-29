@@ -12,6 +12,7 @@ const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 const PER_PAGE = 100;
 const MAX_PAGES = 100; // safety cap
+const ENRICH_CONCURRENCY = 8; // parallel product-page fetches for on-sale enrichment
 
 /**
  * Parse WooCommerce sale price from a rendered product page HTML.
@@ -171,30 +172,41 @@ export const woocommerceCollector: ProductCollector = {
 
     // Phase 2: enrich on-sale products by scraping their permalink for real prices.
     // The Store API incorrectly reports sale_price == regular_price for on-sale items.
+    // Fetched with bounded concurrency — a busy store can have 1000+ on-sale items,
+    // and sequential fetching dominates the whole run.
+    const onSale: { obs: ProductObservation; permalink: string }[] = [];
     for (let i = 0; i < rawProducts.length; i++) {
       const p = rawProducts[i];
       const obs = out[i];
-      if (!p || !obs || !p.on_sale || !p.permalink) continue;
-      try {
-        const pageRes = await fetch(p.permalink, {
-          headers: { "User-Agent": BROWSER_UA },
-          signal: AbortSignal.timeout(30_000),
-        });
-        if (!pageRes.ok) continue;
-        const html = await pageRes.text();
-        const { regular, sale } = parseWooSalePrice(html);
-        // Only override if we got a genuine discount from the page
-        if (regular != null && sale != null && sale < regular) {
-          const discount = deriveDiscount(regular, sale);
-          obs.price = regular;
-          obs.salePrice = discount.salePrice;
-          obs.discountAmount = discount.discountAmount;
-          obs.discountPct = discount.discountPct;
-        }
-      } catch {
-        // One page failure must not abort the whole run — skip silently
-      }
+      if (p?.on_sale && p.permalink && obs) onSale.push({ obs, permalink: p.permalink });
     }
+
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      while (cursor < onSale.length) {
+        const item = onSale[cursor++];
+        if (!item) continue;
+        try {
+          const pageRes = await fetch(item.permalink, {
+            headers: { "User-Agent": BROWSER_UA },
+            signal: AbortSignal.timeout(30_000),
+          });
+          if (!pageRes.ok) continue;
+          const { regular, sale } = parseWooSalePrice(await pageRes.text());
+          // Only override if we got a genuine discount from the page
+          if (regular != null && sale != null && sale < regular) {
+            const discount = deriveDiscount(regular, sale);
+            item.obs.price = regular;
+            item.obs.salePrice = discount.salePrice;
+            item.obs.discountAmount = discount.discountAmount;
+            item.obs.discountPct = discount.discountPct;
+          }
+        } catch {
+          // One page failure must not abort the whole run — skip silently
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(ENRICH_CONCURRENCY, onSale.length) }, worker));
 
     return out;
   },
