@@ -273,6 +273,32 @@ export const appSettings = pgTable("app_settings", {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Digest Studio: authorable prompts + schedulers (Subsystem E)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const digestPrompts = pgTable("digest_prompts", {
+  id: text("id").primaryKey(), // slug, e.g. "daily-default"
+  name: text("name").notNull(),
+  body: text("body").notNull(), // full Gemini instruction; the prompt owns the language
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const digestSchedules = pgTable("digest_schedules", {
+  id: text("id").primaryKey(), // slug
+  name: text("name").notNull(),
+  promptId: text("prompt_id")
+    .notNull()
+    .references(() => digestPrompts.id, { onDelete: "restrict" }),
+  sendAt: text("send_at").notNull(), // "HH:MM", interpreted in Europe/Skopje
+  recipients: jsonb("recipients"), // string[] | null → falls back to digest_recipients
+  enabled: boolean("enabled").notNull().default(true),
+  lastRunOn: date("last_run_on"), // local date the schedule last fired (idempotency)
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Auth whitelist (managed in the Supabase table editor — brief §7)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -395,3 +421,7 @@ export type RegistryFinancialRow = typeof registryFinancials.$inferSelect;
 export type IngestionRunRow = typeof ingestionRuns.$inferSelect;
 export type AdObservationRow = typeof adObservations.$inferSelect;
 export type AppSettingRow = typeof appSettings.$inferSelect;
+export type DigestPromptRow = typeof digestPrompts.$inferSelect;
+export type NewDigestPromptRow = typeof digestPrompts.$inferInsert;
+export type DigestScheduleRow = typeof digestSchedules.$inferSelect;
+export type NewDigestScheduleRow = typeof digestSchedules.$inferInsert;
