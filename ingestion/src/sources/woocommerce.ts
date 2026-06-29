@@ -37,12 +37,14 @@ export function parseWooSalePrice(html: string): {
     if (!pBlock) return { regular: null, sale: null };
     const block = pBlock[1] ?? "";
 
-    // Helper: extract first <bdi> text content from a substring, strip non-digits
+    // Helper: capture ONLY the leading numeric run inside <bdi> (the price), before
+    // the currency symbol. The "ден" symbol renders as hex entities (&#x434;&#x435;…)
+    // whose digits would otherwise be concatenated onto the price. Dots are MKD
+    // thousands separators, so strip them to get the integer denar amount.
     const parseBdi = (s: string): number | null => {
-      const m = s.match(/<bdi[^>]*>([\s\S]*?)<\/bdi>/);
+      const m = s.match(/<bdi[^>]*>\s*([\d.,]+)/);
       if (!m) return null;
-      // Remove HTML tags, then strip non-digit characters (dots are thousands separators)
-      const digits = (m[1] ?? "").replace(/<[^>]+>/g, "").replace(/\D/g, "");
+      const digits = (m[1] ?? "").replace(/[^\d]/g, "");
       if (!digits) return null;
       return Number(digits);
     };
