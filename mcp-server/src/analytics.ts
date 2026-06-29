@@ -149,6 +149,142 @@ export async function socialBenchmark(pool: Pool, opts: { platform?: string; met
   };
 }
 
+/** competitor_ads — active Meta Ad Library ads per competitor, with longevity + creative details. */
+export async function competitorAds(pool: Pool, args: { competitor?: string; days?: number }) {
+  const days = args.days ?? 30;
+  const params: unknown[] = [days];
+  let targetFilter = "";
+  if (args.competitor) {
+    params.push(args.competitor);
+    targetFilter = `AND a.target_id = $${params.length}`;
+  }
+
+  // --- Summary per competitor (on their latest captured_date within the window) ---
+  const summaryRes = await pool.query(
+    `WITH latest AS (
+       SELECT target_id, max(captured_date) AS latest_date
+       FROM ad_observations
+       WHERE captured_date >= current_date - $1::int ${targetFilter.replace(/a\./g, "")}
+       GROUP BY target_id
+     )
+     SELECT a.target_id,
+            count(*)::int                                         AS active_ads,
+            round(avg(a.days_running))::int                       AS avg_days_running,
+            max(a.days_running)                                   AS max_days_running
+     FROM ad_observations a
+     JOIN latest l ON l.target_id = a.target_id AND a.captured_date = l.latest_date
+     GROUP BY a.target_id
+     ORDER BY a.target_id`,
+    params,
+  );
+
+  // --- Platform breakdown (unnest the platforms[] array) ---
+  const platformRes = await pool.query(
+    `WITH latest AS (
+       SELECT target_id, max(captured_date) AS latest_date
+       FROM ad_observations
+       WHERE captured_date >= current_date - $1::int ${targetFilter.replace(/a\./g, "")}
+       GROUP BY target_id
+     )
+     SELECT a.target_id, p.platform, count(*)::int AS ads
+     FROM ad_observations a
+     JOIN latest l ON l.target_id = a.target_id AND a.captured_date = l.latest_date
+     CROSS JOIN LATERAL unnest(a.platforms) AS p(platform)
+     GROUP BY a.target_id, p.platform
+     ORDER BY a.target_id, ads DESC`,
+    params,
+  );
+
+  // --- Top ads per competitor (up to 10, ordered by longevity desc) ---
+  const topAdsRes = await pool.query(
+    `WITH latest AS (
+       SELECT target_id, max(captured_date) AS latest_date
+       FROM ad_observations
+       WHERE captured_date >= current_date - $1::int ${targetFilter.replace(/a\./g, "")}
+       GROUP BY target_id
+     ),
+     ranked AS (
+       SELECT a.target_id, a.days_running, a.started_running_date, a.cta_type,
+              a.link_url, a.ad_title,
+              left(a.ad_body, 160) AS ad_body,
+              a.snapshot_url,
+              row_number() OVER (PARTITION BY a.target_id ORDER BY a.days_running DESC NULLS LAST) AS rn
+       FROM ad_observations a
+       JOIN latest l ON l.target_id = a.target_id AND a.captured_date = l.latest_date
+     )
+     SELECT target_id, days_running, started_running_date, cta_type, link_url, ad_title, ad_body, snapshot_url
+     FROM ranked WHERE rn <= 10
+     ORDER BY target_id, days_running DESC NULLS LAST`,
+    params,
+  );
+
+  // --- Top landing pages per competitor (link_url grouped, top 5) ---
+  const landingRes = await pool.query(
+    `WITH latest AS (
+       SELECT target_id, max(captured_date) AS latest_date
+       FROM ad_observations
+       WHERE captured_date >= current_date - $1::int ${targetFilter.replace(/a\./g, "")}
+       GROUP BY target_id
+     ),
+     ranked AS (
+       SELECT a.target_id, a.link_url, count(*)::int AS ads,
+              row_number() OVER (PARTITION BY a.target_id ORDER BY count(*) DESC) AS rn
+       FROM ad_observations a
+       JOIN latest l ON l.target_id = a.target_id AND a.captured_date = l.latest_date
+       WHERE a.link_url IS NOT NULL
+       GROUP BY a.target_id, a.link_url
+     )
+     SELECT target_id, link_url, ads FROM ranked WHERE rn <= 5
+     ORDER BY target_id, ads DESC`,
+    params,
+  );
+
+  // Group platform rows by target_id → { facebook: N, instagram: M, ... }
+  const platformsByTarget = new Map<string, Record<string, number>>();
+  for (const row of platformRes.rows as { target_id: string; platform: string; ads: number }[]) {
+    if (!platformsByTarget.has(row.target_id)) platformsByTarget.set(row.target_id, {});
+    platformsByTarget.get(row.target_id)![row.platform] = row.ads;
+  }
+
+  // Group top_ads rows by target_id
+  const topAdsByTarget = new Map<string, unknown[]>();
+  for (const row of topAdsRes.rows as { target_id: string; [k: string]: unknown }[]) {
+    const { target_id, ...ad } = row;
+    if (!topAdsByTarget.has(target_id)) topAdsByTarget.set(target_id, []);
+    topAdsByTarget.get(target_id)!.push(ad);
+  }
+
+  // Group landing pages by target_id
+  const landingByTarget = new Map<string, unknown[]>();
+  for (const row of landingRes.rows as { target_id: string; link_url: string; ads: number }[]) {
+    if (!landingByTarget.has(row.target_id)) landingByTarget.set(row.target_id, []);
+    landingByTarget.get(row.target_id)!.push({ link_url: row.link_url, ads: row.ads });
+  }
+
+  const competitors = (
+    summaryRes.rows as {
+      target_id: string;
+      active_ads: number;
+      avg_days_running: number | null;
+      max_days_running: number | null;
+    }[]
+  ).map((r) => ({
+    target_id: r.target_id,
+    active_ads: r.active_ads,
+    avg_days_running: r.avg_days_running,
+    max_days_running: r.max_days_running,
+    platforms: platformsByTarget.get(r.target_id) ?? {},
+    top_ads: topAdsByTarget.get(r.target_id) ?? [],
+    top_landing_pages: landingByTarget.get(r.target_id) ?? [],
+  }));
+
+  return {
+    note: "Active Meta Ad Library ads. Longevity (days_running) is the performance proxy — spend/impressions are NOT public for these (non-EU, commercial) ads.",
+    period_days: days,
+    competitors,
+  };
+}
+
 /** price_assortment — price ranges and assortment, by competitor/brand. */
 export async function priceAssortment(pool: Pool, opts: { competitor?: string; brand?: string }) {
   const params: unknown[] = [];
