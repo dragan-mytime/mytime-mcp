@@ -1,6 +1,7 @@
 import express, { type Request, type Response, type Router } from "express";
 import { callbackHandler, loginHandler, logoutHandler, requireAdmin } from "./auth.js";
 import * as dashboard from "./pages/dashboard.js";
+import * as digests from "./pages/digests.js";
 import * as recipients from "./pages/recipients.js";
 import * as settings from "./pages/settings.js";
 import * as targets from "./pages/targets.js";
@@ -52,6 +53,7 @@ export function adminRouter(): Router {
   r.post("/recipients", submit(recipients));
   r.get("/settings", page("Settings", settings));
   r.post("/settings", submit(settings));
+  r.get("/digests", page("Digests", digests));
   r.get("/targets", page("Targets", targets));
   r.get("/targets/:id", async (req: Request, res: Response) => {
     const { title, body } = await targets.renderEdit(req);

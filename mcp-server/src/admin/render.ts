@@ -25,6 +25,7 @@ const NAV_ITEMS: { href: string; label: string }[] = [
   { href: "/admin", label: "Dashboard" },
   { href: "/admin/users", label: "Users" },
   { href: "/admin/recipients", label: "Recipients" },
+  { href: "/admin/digests", label: "Digests" },
   { href: "/admin/settings", label: "Settings" },
   { href: "/admin/targets", label: "Targets" },
 ];
@@ -159,6 +160,8 @@ export function layout(
     @media (max-width: 560px) {
       .tbl-compact th, .tbl-compact td { padding: .6rem .65rem; }
     }
+    textarea.mono { font-family: 'Roboto Mono', ui-monospace, monospace; min-height: 14rem; line-height: 1.5; }
+    .preview-frame { width: 100%; height: 600px; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; }
   </style>
 </head>
 <body>
