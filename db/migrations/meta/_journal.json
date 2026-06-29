@@ -15,6 +15,13 @@
       "when": 1782746994622,
       "tag": "0001_clumsy_wild_pack",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1782757671573,
+      "tag": "0002_rich_moondragon",
+      "breakpoints": true
     }
   ]
 }
