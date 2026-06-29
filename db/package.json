@@ -20,7 +20,8 @@
     "generate": "drizzle-kit generate",
     "migrate": "drizzle-kit migrate",
     "seed": "node dist/seed.js",
-    "studio": "drizzle-kit studio"
+    "studio": "drizzle-kit studio",
+    "test": "vitest run"
   },
   "dependencies": {
     "@mytime/shared": "workspace:*",
@@ -31,6 +32,7 @@
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.3",
     "@types/pg": "^8.20.0",
-    "drizzle-kit": "^0.31.10"
+    "drizzle-kit": "^0.31.10",
+    "vitest": "^3.2.4"
   }
 }
