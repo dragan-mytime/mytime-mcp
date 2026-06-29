@@ -23,3 +23,8 @@ Thumbs.db
 
 # local dry-run harness (not committed)
 _dry*.mjs
+
+# Generated validation reports
+docs/validation/*.md
+docs/validation/*.json
+!docs/validation/.gitkeep

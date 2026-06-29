@@ -40,13 +40,22 @@ function parseEuPrice(s: string): number | null {
 }
 
 /** Parse a nopCommerce product page; returns null for non-product pages (categories). */
-function parseNop(html: string, url: string): ProductObservation | null {
+export function parseNop(html: string, url: string): ProductObservation | null {
   if (!/product-details-form/.test(html)) return null; // product-page marker
   const name = cleanText(html.match(/<h1[^>]*>([^<]+)<\/h1>/)?.[1]);
   const priceRaw = html.match(/(?:actual-price|price-value-\d+)[^>]*>\s*([0-9.,]+)/)?.[1];
-  const price = priceRaw ? parseEuPrice(priceRaw) : null;
+  const currentPrice = priceRaw ? parseEuPrice(priceRaw) : null;
   // Skip price-on-request items (nopCommerce renders "0,00" when no public price).
-  if (price == null || price <= 0 || name == null) return null;
+  if (currentPrice == null || currentPrice <= 0 || name == null) return null;
+
+  // Parse the struck old price from nopCommerce sale markup.
+  const oldPriceRaw = html.match(/old-product-price[\s\S]*?([0-9][0-9.,]*)\s*MKD/i)?.[1];
+  const oldPrice = oldPriceRaw ? parseEuPrice(oldPriceRaw) : null;
+
+  // When an old (struck) price exists and is higher, it is the regular price.
+  const price = oldPrice != null && oldPrice > currentPrice ? oldPrice : currentPrice;
+  const saleCandidate = oldPrice != null && oldPrice > currentPrice ? currentPrice : null;
+
   const id = html.match(/data-productid="(\d+)"/)?.[1];
   const img =
     html.match(/property="og:image"[^>]+content="([^"]+)"/)?.[1] ??
@@ -68,7 +77,7 @@ function parseNop(html: string, url: string): ProductObservation | null {
     imageUrl: cleanText(img),
     currency: "MKD",
     price,
-    ...deriveDiscount(price, null),
+    ...deriveDiscount(price, saleCandidate),
     stockStatus: oos ? "out_of_stock" : "in_stock",
     stockQuantity: null,
     qtyBasis: "assumed",
