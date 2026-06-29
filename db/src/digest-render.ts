@@ -1,11 +1,7 @@
-import type { CompetitorDigest, DigestResult } from "@mytime/db";
 import { optionalEnv } from "@mytime/shared";
+import type { CompetitorDigest, DigestResult } from "./digest.js";
 
 const MODEL = "gemini-2.5-flash";
-
-// ---------------------------------------------------------------------------
-// HTML escaping
-// ---------------------------------------------------------------------------
 
 function esc(v: string | number | null | undefined): string {
   if (v == null) return "";
@@ -16,57 +12,42 @@ function esc(v: string | number | null | undefined): string {
     .replace(/"/g, "&quot;");
 }
 
-// ---------------------------------------------------------------------------
-// Deterministic template (fallback + structure for Gemini)
-// ---------------------------------------------------------------------------
-
 function competitorBlock(c: CompetitorDigest, lang: "en" | "mk"): string {
   const isEn = lang === "en";
-
   const salesLabel = isEn ? "Sales" : "Продажби";
   const onSaleLabel = isEn ? "On sale today" : "Денес на попуст";
   const avgPctLabel = isEn ? "Avg. discount" : "Просечен попуст";
   const newlyDiscLabel = isEn ? "Newly discounted" : "Ново на попуст";
   const endedLabel = isEn ? "Ended" : "Завршиле";
-
   const adsLabel = isEn ? "Ads" : "Огласи";
   const activeTodayLabel = isEn ? "Active today" : "Активни денес";
   const newAdsLabel = isEn ? "New ads" : "Нови огласи";
   const longestLabel = isEn ? "Longest-running" : "Најдолго активен";
-
   const socialLabel = isEn ? "Social" : "Социјални мрежи";
   const followerDeltaLabel = isEn ? "Follower change" : "Промена на следачи";
-
   const inventoryLabel = isEn ? "Inventory" : "Залихи";
   const newProductsLabel = isEn ? "New products" : "Нови производи";
   const stockoutsLabel = isEn ? "New stockouts" : "Ново без залихи";
   const priceMovesLabel = isEn ? "Price moves (>5%)" : "Промени на цени (>5%)";
-
   const noDataLabel = isEn ? "none" : "нема";
 
   const { sales, ads, social, inventory } = c;
-
   const avgPctStr = sales.avgPct != null ? `${sales.avgPct.toFixed(1)}%` : noDataLabel;
-
   const longestRunningStr =
     ads.longestRunning != null
       ? `${esc(ads.longestRunning.adTitle)} (${ads.longestRunning.daysRunning ?? "?"} ${isEn ? "days" : "дена"})`
       : noDataLabel;
-
   const followerLines = Object.entries(social.followers)
-    .map(([platform, delta]) => `<li>${esc(platform)}: ${delta >= 0 ? "+" : ""}${delta}</li>`)
+    .map(([p, d]) => `<li>${esc(p)}: ${d >= 0 ? "+" : ""}${d}</li>`)
     .join("");
-
   const stockoutLines =
     inventory.newStockouts.length > 0
       ? inventory.newStockouts.map((n) => `<li>${esc(n)}</li>`).join("")
       : `<li>${noDataLabel}</li>`;
-
   const priceMoveLines =
     inventory.priceMoves.length > 0
       ? inventory.priceMoves.map((p) => `<li>${esc(p.name)}: ${p.from} → ${p.to}</li>`).join("")
       : `<li>${noDataLabel}</li>`;
-
   const newAdLines =
     ads.new.length > 0
       ? ads.new
@@ -104,81 +85,55 @@ function competitorBlock(c: CompetitorDigest, lang: "en" | "mk"): string {
 </ul>`;
 }
 
-export function templateDigest(digest: DigestResult, lang: "en" | "mk"): string {
-  const isEn = lang === "en";
-  const heading = isEn ? "Daily competitor digest" : "Дневен преглед на конкуренти";
-  const dateLabel = isEn ? "Date" : "Датум";
-
-  const blocks = digest.competitors.map((c) => competitorBlock(c, lang)).join("\n<hr/>\n");
-
-  return `<h2>${heading}</h2>
+/** Deterministic bilingual fallback (EN then MK) used when Gemini is unavailable. */
+export function templateDigest(digest: DigestResult): string {
+  const block = (lang: "en" | "mk") => {
+    const heading = lang === "en" ? "Daily competitor digest" : "Дневен преглед на конкуренти";
+    const dateLabel = lang === "en" ? "Date" : "Датум";
+    const blocks = digest.competitors.map((c) => competitorBlock(c, lang)).join("\n<hr/>\n");
+    return `<h2>${heading}</h2>
 <p>${dateLabel}: <strong>${esc(digest.generatedFor)}</strong></p>
 ${blocks}`;
+  };
+  return `${block("en")}
+<hr/>
+${block("mk")}`;
 }
 
-// ---------------------------------------------------------------------------
-// Gemini narration (returns null on any failure or missing key)
-// ---------------------------------------------------------------------------
-
+/** Call Gemini with the given prompt as the system instruction. Returns null on any failure. */
 export async function geminiNarrate(
   digest: DigestResult,
-  lang: "en" | "mk",
+  promptBody: string,
+  model = MODEL,
 ): Promise<string | null> {
   const key = optionalEnv("GEMINI_API_KEY");
   if (!key) return null;
-
-  const langLabel = lang === "en" ? "English" : "Macedonian";
-  const systemPrompt =
-    `You are a competitive-intelligence analyst. Write a concise daily competitor briefing in ${langLabel} ` +
-    "from this JSON. One short section per competitor, highlight the most important changes " +
-    "(new sales campaigns, new/long-running ads, follower swings, stockouts). " +
-    "Output clean semantic HTML only (h2/h3/p/ul/li) — NO markdown, no code fences.";
-
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${encodeURIComponent(key)}`;
-
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
   try {
     const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemPrompt }] },
+        system_instruction: { parts: [{ text: promptBody }] },
         contents: [{ parts: [{ text: JSON.stringify(digest) }] }],
         generationConfig: { maxOutputTokens: 2000 },
       }),
       signal: AbortSignal.timeout(30_000),
     });
-
     if (!res.ok) return null;
-
     const json = (await res.json()) as {
       candidates?: { content?: { parts?: { text?: string }[] } }[];
     };
-
     const text = json.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     if (!text) return null;
-
-    // Strip any accidental code fences
     return text.replace(/```[\w]*\n?/g, "").trim();
   } catch {
     return null;
   }
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-export async function renderDigestEmail(
-  digest: DigestResult,
-): Promise<{ subject: string; html: string }> {
-  const subject = `MY:TIME — Дневен преглед / Daily digest (${digest.generatedFor})`;
-
-  const [enHtml, mkHtml] = await Promise.all([
-    geminiNarrate(digest, "en").then((g) => g ?? templateDigest(digest, "en")),
-    geminiNarrate(digest, "mk").then((g) => g ?? templateDigest(digest, "mk")),
-  ]);
-
-  const html = `<!DOCTYPE html>
+function emailShell(subject: string, inner: string): string {
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -195,11 +150,19 @@ export async function renderDigestEmail(
 </head>
 <body>
 <h1>${esc(subject)}</h1>
-${enHtml}
-<hr />
-${mkHtml}
+${inner}
 </body>
 </html>`;
+}
 
-  return { subject, html };
+/** Render the digest email from a prompt; falls back to the template if Gemini is unavailable. */
+export async function renderDigestWithPrompt(
+  digest: DigestResult,
+  promptBody: string,
+): Promise<{ subject: string; html: string; usedFallback: boolean }> {
+  const subject = `MY:TIME — Дневен преглед / Daily digest (${digest.generatedFor})`;
+  const narrated = await geminiNarrate(digest, promptBody);
+  const usedFallback = narrated == null;
+  const inner = narrated ?? templateDigest(digest);
+  return { subject, html: emailShell(subject, inner), usedFallback };
 }

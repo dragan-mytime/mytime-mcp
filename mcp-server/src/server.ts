@@ -12,6 +12,7 @@ import { adminRouter } from "./admin/router.js";
 import { createMyTimeProvider, handleGoogleCallback } from "./auth/provider.js";
 import { roleSatisfies } from "./auth/roles.js";
 import { readPool } from "./db.js";
+import { startDigestScheduler } from "./digestScheduler.js";
 import { health } from "./health.js";
 import { tools } from "./tools/index.js";
 
@@ -129,5 +130,6 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       { port, tools: tools.map((t) => t.name) },
       "MCP server listening (OAuth 2.1 enabled)",
     );
+    startDigestScheduler();
   });
 }

@@ -42,6 +42,9 @@ importers:
       drizzle-kit:
         specifier: ^0.31.10
         version: 0.31.10
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.6(@types/node@26.0.1)(tsx@4.22.4)
 
   ingestion:
     dependencies:
