@@ -6,7 +6,7 @@
 
 **Architecture:** New `ingestion/src/validation/` module. A shared FireCrawl fetch feeds two extractors per product — a deterministic per-site **verifier** (ground truth) and a generic **LLM check** (drift signal). A diff engine compares verifier⇄DB (data mismatches) and verifier⇄LLM (structure drift), and a reporter writes dated markdown+JSON. Then per-site collector fixes are diagnosed from the captured live evidence (the WC Store API, for example, does **not** expose real sale prices, so its discount fix requires parsing the rendered page), TDD'd against saved HTML fixtures, and verified by re-running the validator + a fresh `pnpm ingest`.
 
-**Tech Stack:** Node 24 / TS 6 (ESM, NodeNext), Drizzle, Biome, Vitest (existing test runner — confirm in Task 0), FireCrawl (`FIRECRAWL_API_KEY`, already in `.env`), Anthropic Messages API for the drift check (new `ANTHROPIC_API_KEY`).
+**Tech Stack:** Node 24 / TS 6 (ESM, NodeNext), Drizzle, Biome, Vitest (existing test runner — confirm in Task 0), FireCrawl (`FIRECRAWL_API_KEY`, already in `.env`), Google Gemini API for the drift check (new `GEMINI_API_KEY`).
 
 ---
 
@@ -503,18 +503,18 @@ Repeat for: `woocommerce.ts` (parse the **rendered product page** for `<del>`/`<
 
 ---
 
-## Task 6: LLM drift check (Anthropic)
+## Task 6: LLM drift check (Gemini)
 
 **Files:**
 - Create: `ingestion/src/validation/llm-check.ts`
-- Modify: `.env` and `.env.example` (add `ANTHROPIC_API_KEY`)
+- Modify: `.env` and `.env.example` (add `GEMINI_API_KEY`)
 
 - [ ] **Step 1: Add the env var**
 
 Append to `.env.example`:
 ```
-# Validation drift cross-check (Anthropic Messages API)
-ANTHROPIC_API_KEY=
+# Validation drift cross-check (Google Gemini API)
+GEMINI_API_KEY=
 ```
 Add the real key to `.env` (user supplies; do not commit).
 
@@ -524,6 +524,7 @@ Add the real key to `.env` (user supplies; do not commit).
 import { optionalEnv } from "@mytime/shared";
 import type { LiveSnapshot } from "./types.js";
 
+const MODEL = "gemini-2.5-flash";
 const SYS =
   "Extract product facts from the page markdown as STRICT JSON with keys " +
   "name, brand, price (number, regular/list price), salePrice (number or null, " +
@@ -532,26 +533,24 @@ const SYS =
 
 /** Independent LLM read of the page — used ONLY as a drift signal, never as truth. */
 export async function llmExtract(markdown: string): Promise<LiveSnapshot | null> {
-  const key = optionalEnv("ANTHROPIC_API_KEY");
+  const key = optionalEnv("GEMINI_API_KEY");
   if (!key) return null; // drift check is optional; skip cleanly when unconfigured
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${encodeURIComponent(key)}`;
+  const res = await fetch(url, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-    },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: "claude-haiku-4-5",
-      max_tokens: 400,
-      system: SYS,
-      messages: [{ role: "user", content: markdown.slice(0, 12_000) }],
+      system_instruction: { parts: [{ text: SYS }] },
+      contents: [{ parts: [{ text: markdown.slice(0, 12_000) }] }],
+      generationConfig: { responseMimeType: "application/json", maxOutputTokens: 400 },
     }),
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) return null;
-  const json = (await res.json()) as { content?: { text?: string }[] };
-  const text = json.content?.[0]?.text ?? "";
+  const json = (await res.json()) as {
+    candidates?: { content?: { parts?: { text?: string }[] } }[];
+  };
+  const text = json.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
   const m = /\{[\s\S]*\}/.exec(text);
   if (!m) return null;
   try {
@@ -571,7 +570,7 @@ Expected: PASS.
 
 ```bash
 git add ingestion/src/validation/llm-check.ts .env.example
-git commit -m "feat(validation): optional Anthropic LLM drift cross-check"
+git commit -m "feat(validation): optional Gemini LLM drift cross-check"
 ```
 
 ---
