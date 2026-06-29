@@ -12,9 +12,18 @@ const htmlFes = readFileSync(
   "utf8",
 );
 
+const htmlLucent = readFileSync(
+  new URL("../../sources/fixtures/swarovski/lucent-hoop-1485.html", import.meta.url),
+  "utf8",
+);
+
 describe("webJsonLdVerifier", () => {
   it("targets includes saat-saat", () => {
     expect(webJsonLdVerifier.targets).toContain("saat-saat");
+  });
+
+  it("targets includes swarovski", () => {
+    expect(webJsonLdVerifier.targets).toContain("swarovski");
   });
 
   describe("escp103004-9494 (on sale: regular 8000, sale 6400)", () => {
@@ -58,7 +67,25 @@ describe("webJsonLdVerifier", () => {
     });
 
     it("salePrice is null", () => {
-      expect(snap.salePrice).toBeNull();
+      expect(snap.salePrice ?? null).toBeNull();
+    });
+  });
+
+  describe("lucent-hoop-1485 swarovski (og: price 19000, sale 11400)", () => {
+    const snap = webJsonLdVerifier.extract(
+      htmlLucent,
+      "",
+      "https://royalhouse.mk/p/1485/lucent-hoop-earrings",
+    );
+
+    it("price is 19000", () => {
+      expect(snap.price).not.toBeNull();
+      expect(snap.price).toBeCloseTo(19000, 0);
+    });
+
+    it("salePrice is 11400", () => {
+      expect(snap.salePrice).not.toBeNull();
+      expect(snap.salePrice).toBeCloseTo(11400, 0);
     });
   });
 });
