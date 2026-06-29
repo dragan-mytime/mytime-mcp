@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { DigestResult } from "../src/index.js";
 import { renderDigestWithPrompt, templateDigest } from "../src/digest-render.js";
+import type { DigestResult } from "../src/index.js";
 
 // No Gemini key → renderDigestWithPrompt must use the deterministic template.
 vi.stubEnv("GEMINI_API_KEY", "");

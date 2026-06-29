@@ -190,10 +190,7 @@ export async function dueSchedules(
 }
 
 export async function markScheduleRan(db: Db, id: string, todayLocal: string): Promise<void> {
-  await db
-    .update(digestSchedules)
-    .set({ lastRunOn: todayLocal })
-    .where(eq(digestSchedules.id, id));
+  await db.update(digestSchedules).set({ lastRunOn: todayLocal }).where(eq(digestSchedules.id, id));
 }
 
 /** A schedule's recipients, or the global digest_recipients setting, or a final default. */

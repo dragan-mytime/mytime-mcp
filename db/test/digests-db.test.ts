@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { isDue, parseRecipients, slugify, validRecipients, validSendAt } from "../src/digests-db.js";
+import {
+  isDue,
+  parseRecipients,
+  slugify,
+  validRecipients,
+  validSendAt,
+} from "../src/digests-db.js";
 
 describe("slugify", () => {
   it("kebab-cases and trims", () => {
