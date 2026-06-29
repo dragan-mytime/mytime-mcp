@@ -236,10 +236,21 @@ function metaContent(html: string, prop: string): string | null {
 }
 
 /** Fallback parser for OpenGraph product pages (e.g. Royal House / Swarovski). */
-function parseOg(html: string, url: string): ProductObservation | null {
-  const price = toNumber(
-    metaContent(html, "product:price:amount") ?? metaContent(html, "og:price:amount"),
-  );
+export function parseOg(html: string, url: string): ProductObservation | null {
+  const ogPrice = toNumber(metaContent(html, "og:price:amount"));
+  const productPrice = toNumber(metaContent(html, "product:price:amount"));
+  // When og:price:amount > product:price:amount, og is the regular (list) price
+  // and product:price:amount is the current (sale) price (Royal House / Swarovski pattern).
+  // Otherwise fall back to whichever is present.
+  let price: number | null;
+  let saleCandidate: number | null;
+  if (ogPrice != null && productPrice != null && ogPrice > productPrice) {
+    price = ogPrice;
+    saleCandidate = productPrice;
+  } else {
+    price = productPrice ?? ogPrice;
+    saleCandidate = toNumber(metaContent(html, "product:sale_price:amount"));
+  }
   if (price == null) return null;
   // Strip an OG-title site suffix like " :: Royal House" / " | Site".
   const name = cleanText(
@@ -266,7 +277,7 @@ function parseOg(html: string, url: string): ProductObservation | null {
     imageUrl: cleanText(metaContent(html, "og:image")),
     currency: metaContent(html, "product:price:currency") ?? "MKD",
     price,
-    ...deriveDiscount(price, toNumber(metaContent(html, "product:sale_price:amount"))),
+    ...deriveDiscount(price, saleCandidate),
     stockStatus: avail.replace(/\s/g, "").includes("instock")
       ? "in_stock"
       : avail
