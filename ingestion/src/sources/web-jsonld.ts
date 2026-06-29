@@ -132,12 +132,58 @@ const isProduct = (n: JsonLd): boolean => {
   return Array.isArray(t) ? t.includes("Product") : t === "Product";
 };
 
-function parseProduct(html: string, url: string): ProductObservation | null {
+/**
+ * Parse a Macedonian-formatted price string to a number.
+ * "8.000 ден." → 8000 (the dot is a thousands separator, not a decimal point).
+ * We strip everything that isn't a digit.
+ */
+function parseMkdPrice(raw: string): number | null {
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return null;
+  const n = Number.parseInt(digits, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Strip HTML tags and decode basic entities to get inner text. */
+function innerText(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim();
+}
+
+/**
+ * Extract the struck-through original price from the main product block (before
+ * Related Products / Слични / Similar / Препорач sections).  Returns null when
+ * the product is not on sale.
+ */
+function parseStruckPrice(html: string): number | null {
+  const relatedIdx = html.search(/Related\s+Products|Слични|Similar|Препорач/i);
+  const mainBlock = relatedIdx > 0 ? html.slice(0, relatedIdx) : html;
+  const m = mainBlock.match(/<span[^>]*class="[^"]*line-through[^"]*"[^>]*>([\s\S]*?)<\/span>/);
+  if (m?.[1]) return parseMkdPrice(innerText(m[1]));
+  return null;
+}
+
+export function parseProduct(html: string, url: string): ProductObservation | null {
   const node = jsonLdBlocks(html).find(isProduct);
   if (!node) return null;
   const offer = Array.isArray(node.offers) ? node.offers[0] : node.offers;
-  const price = toNumber(offer?.price);
-  if (price == null) return null;
+  const currentPrice = toNumber(offer?.price);
+  if (currentPrice == null) return null;
+
+  // Check for a struck-through original price in the HTML main block.
+  // When found and greater than the JSON-LD price, the JSON-LD price is the
+  // sale price and the struck price is the regular price.
+  const struckOriginal = parseStruckPrice(html);
+  const price =
+    struckOriginal != null && struckOriginal > currentPrice ? struckOriginal : currentPrice;
+  const saleCurrentPrice =
+    struckOriginal != null && struckOriginal > currentPrice ? currentPrice : null;
 
   const name = cleanText(node.name);
   const brand = normalizeBrand(typeof node.brand === "string" ? node.brand : node.brand?.name);
@@ -167,7 +213,7 @@ function parseProduct(html: string, url: string): ProductObservation | null {
     imageUrl: cleanText(Array.isArray(node.image) ? node.image[0] : node.image),
     currency: "MKD",
     price,
-    ...deriveDiscount(price, null),
+    ...deriveDiscount(price, saleCurrentPrice),
     stockStatus: inStock ? "in_stock" : "out_of_stock",
     stockQuantity,
     qtyBasis: stockQuantity != null ? "exact" : "assumed",
