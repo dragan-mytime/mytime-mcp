@@ -30,11 +30,16 @@ const NAV_ITEMS: { href: string; label: string }[] = [
 ];
 
 /** Wrap body in a full HTML document with the branded header + optional flash. */
-export function layout(title: string, body: string, opts?: { flash?: string }): string {
+export function layout(
+  title: string,
+  body: string,
+  opts?: { flash?: string; activeNav?: string },
+): string {
   const flash = opts?.flash ? `<div class="flash">${esc(opts.flash)}</div>` : "";
+  const active = opts?.activeNav ?? title;
   const links = NAV_ITEMS.map(
     (n) =>
-      `<a href="${n.href}"${n.label === title ? ' class="active" aria-current="page"' : ""}>${n.label}</a>`,
+      `<a href="${n.href}"${n.label === active ? ' class="active" aria-current="page"' : ""}>${n.label}</a>`,
   ).join("");
 
   return `<!DOCTYPE html>
@@ -140,6 +145,20 @@ export function layout(title: string, body: string, opts?: { flash?: string }): 
     .btn-danger:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
     .btn-sm { padding: .3rem .6rem; font-size: .72rem; }
     .note { font-size: .8rem; color: var(--muted); margin-top: .35rem; }
+    .muted { color: var(--muted); }
+
+    /* ── Status pill + compact target list ── */
+    .pill { display: inline-block; font-family: 'Roboto Condensed', sans-serif; font-weight: 700; font-size: .68rem;
+      letter-spacing: .05em; text-transform: uppercase; padding: .2rem .55rem; border-radius: 999px; border: 1px solid; }
+    .pill-on { background: var(--ok-bg); color: var(--ok-fg); border-color: var(--ok-bd); }
+    .pill-off { background: var(--surface); color: var(--muted); border-color: var(--border); }
+    .t-name { font-weight: 500; color: var(--ink); }
+    .t-sub { font-size: .72rem; color: var(--muted); margin-top: .1rem; }
+    .tbl-compact td:last-child, .tbl-compact th:last-child { text-align: right; white-space: nowrap; }
+    .tbl-compact td:nth-child(2), .tbl-compact th:nth-child(2) { white-space: nowrap; }
+    @media (max-width: 560px) {
+      .tbl-compact th, .tbl-compact td { padding: .6rem .65rem; }
+    }
   </style>
 </head>
 <body>

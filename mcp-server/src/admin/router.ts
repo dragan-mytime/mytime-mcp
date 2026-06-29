@@ -53,6 +53,10 @@ export function adminRouter(): Router {
   r.get("/settings", page("Settings", settings));
   r.post("/settings", submit(settings));
   r.get("/targets", page("Targets", targets));
+  r.get("/targets/:id", async (req: Request, res: Response) => {
+    const { title, body } = await targets.renderEdit(req);
+    res.type("html").send(layout(title, body, { activeNav: "Targets" }));
+  });
   r.post("/targets", submit(targets));
 
   return r;

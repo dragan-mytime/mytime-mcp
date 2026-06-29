@@ -26,8 +26,8 @@ function socialHandle(social: Record<string, string> | null, key: string): strin
   return typeof val === "string" ? val : "";
 }
 
-export async function render(req: Request): Promise<string> {
-  const admin = (req as AdminReq).admin;
+/** Compact, phone-friendly list — name + status + an Edit button to the detail page. */
+export async function render(_req: Request): Promise<string> {
   const pool = adminWritePool();
 
   const res = await pool.query<TargetRow>(
@@ -39,58 +39,96 @@ export async function render(req: Request): Promise<string> {
     .map(
       (t) => `
       <tr>
-        <td style="white-space:nowrap;">${esc(t.id)}</td>
-        <td>${esc(t.name)}</td>
-        <td>${esc(t.platform ?? "")}</td>
-        <td colspan="5">
-          <form method="POST" action="/admin/targets" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:.4rem;align-items:center;">
-            ${csrfField(admin.csrf)}
-            <input type="hidden" name="action" value="save">
-            <input type="hidden" name="id" value="${esc(t.id)}">
-            <input type="url" name="web_url" placeholder="https://…"
-              value="${esc(t.web_url ?? "")}" style="margin-bottom:0;">
-            <input type="text" name="instagram" placeholder="instagram URL"
-              value="${esc(socialHandle(t.social, "instagram"))}" style="margin-bottom:0;">
-            <input type="text" name="facebook" placeholder="facebook URL"
-              value="${esc(socialHandle(t.social, "facebook"))}" style="margin-bottom:0;">
-            <input type="text" name="tiktok" placeholder="tiktok URL"
-              value="${esc(socialHandle(t.social, "tiktok"))}" style="margin-bottom:0;">
-            <div style="display:flex;align-items:center;gap:.5rem;white-space:nowrap;">
-              <label style="display:flex;align-items:center;gap:.25rem;margin-bottom:0;font-weight:normal;">
-                <input type="checkbox" name="active" value="1"${t.active ? " checked" : ""}> Active
-              </label>
-              <button type="submit" class="btn btn-primary btn-sm">Save</button>
-            </div>
-          </form>
+        <td>
+          <div class="t-name">${esc(t.name)}</div>
+          ${t.platform ? `<div class="t-sub">${esc(t.platform)}</div>` : ""}
         </td>
+        <td><span class="pill ${t.active ? "pill-on" : "pill-off"}">${t.active ? "On" : "Off"}</span></td>
+        <td><a class="btn btn-sm btn-primary" href="/admin/targets/${esc(t.id)}">Edit</a></td>
       </tr>`,
     )
     .join("\n");
 
   return `
-    <p class="note" style="margin-bottom:1rem;">
-      Changes apply on the next daily run. Columns after Platform: web URL, Instagram, Facebook, TikTok.
+    <table class="tbl-compact">
+      <thead>
+        <tr><th>Competitor</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody>
+        ${tableRows || '<tr><td colspan="3" class="muted">No targets found.</td></tr>'}
+      </tbody>
+    </table>
+    <p class="note">
+      Tap <strong>Edit</strong> to manage a competitor's website &amp; social links.
+      Changes apply on the next daily run (03:15).
     </p>
-    <div class="card" style="overflow-x:auto;">
-      <table>
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>Name</th>
-            <th>Platform</th>
-            <th>Web URL</th>
-            <th>Instagram</th>
-            <th>Facebook</th>
-            <th>TikTok</th>
-            <th>Active / Save</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${tableRows || '<tr><td colspan="8" style="color:#999;">No targets found.</td></tr>'}
-        </tbody>
-      </table>
+  `;
+}
+
+/** Edit page for a single target — where the actual website &amp; social links live. */
+export async function renderEdit(req: Request): Promise<{ title: string; body: string }> {
+  const admin = (req as AdminReq).admin;
+  const id = String((req.params as Record<string, string>).id ?? "").trim();
+  const pool = adminWritePool();
+
+  const res = await pool.query<TargetRow>(
+    "SELECT id, name, web_url, social, active, platform FROM targets WHERE id = $1",
+    [id],
+  );
+  const t = res.rows[0];
+
+  if (!t) {
+    return {
+      title: "Targets",
+      body: `
+        <p class="error">Target not found.</p>
+        <p><a class="btn" style="border-color:var(--border);color:var(--slate);" href="/admin/targets">← Back to targets</a></p>
+      `,
+    };
+  }
+
+  const body = `
+    <p class="note" style="margin:-.5rem 0 1.25rem;">
+      <a href="/admin/targets">← Targets</a>
+      &nbsp;·&nbsp; Platform: <strong>${esc(t.platform ?? "—")}</strong>
+      &nbsp;·&nbsp; ID: <code>${esc(t.id)}</code>
+    </p>
+    <div class="card">
+      <form method="POST" action="/admin/targets">
+        ${csrfField(admin.csrf)}
+        <input type="hidden" name="action" value="save">
+        <input type="hidden" name="id" value="${esc(t.id)}">
+
+        <label for="f-web">Website URL</label>
+        <input id="f-web" type="url" name="web_url" placeholder="https://…"
+          value="${esc(t.web_url ?? "")}">
+
+        <label for="f-ig">Instagram URL</label>
+        <input id="f-ig" type="text" name="instagram" placeholder="https://instagram.com/…"
+          value="${esc(socialHandle(t.social, "instagram"))}">
+
+        <label for="f-fb">Facebook URL</label>
+        <input id="f-fb" type="text" name="facebook" placeholder="https://facebook.com/…"
+          value="${esc(socialHandle(t.social, "facebook"))}">
+
+        <label for="f-tt">TikTok URL</label>
+        <input id="f-tt" type="text" name="tiktok" placeholder="https://tiktok.com/@…"
+          value="${esc(socialHandle(t.social, "tiktok"))}">
+
+        <label style="font-weight:500;margin-top:.4rem;">
+          <input type="checkbox" name="active" value="1"${t.active ? " checked" : ""}>
+          Active — include in daily runs
+        </label>
+
+        <div style="display:flex;gap:.6rem;margin-top:1.1rem;">
+          <button type="submit" class="btn btn-primary">Save changes</button>
+          <a class="btn" style="border-color:var(--border);color:var(--slate);" href="/admin/targets">Cancel</a>
+        </div>
+      </form>
     </div>
   `;
+
+  return { title: `Edit ${t.name}`, body };
 }
 
 export async function submit(
