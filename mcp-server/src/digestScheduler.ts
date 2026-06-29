@@ -65,7 +65,7 @@ export async function tick(db: Db, now: Date = new Date()): Promise<void> {
   }
 }
 
-let timer: ReturnType<typeof setInterval> | undefined;
+let _timer: ReturnType<typeof setInterval> | undefined;
 
 /** Start the 60s scheduler loop. No-ops (logs) if RESEND_API_KEY is absent. */
 export function startDigestScheduler(): void {
@@ -77,7 +77,7 @@ export function startDigestScheduler(): void {
   const run = () => {
     tick(db).catch((err) => logger.error({ err }, "digest tick error"));
   };
-  timer = setInterval(run, 60_000);
+  _timer = setInterval(run, 60_000);
   run();
   logger.info("digest scheduler started (Europe/Skopje, 60s tick)");
 }
