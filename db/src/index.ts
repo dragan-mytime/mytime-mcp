@@ -5,6 +5,7 @@ import * as schema from "./schema.js";
 export type { NewTargetRow, TargetRow } from "./schema.js";
 export * as schema from "./schema.js";
 export * from "./writers.js";
+export * from "./digest.js";
 
 /**
  * Build a typed Drizzle client over a Postgres pool.
