@@ -14,6 +14,7 @@ import { extractHandle } from "./social/_social.js";
 import { socialCollectors } from "./social/index.js";
 import { collectOwnBrandMeta } from "./social/meta-own.js";
 import { productCollectors } from "./sources/index.js";
+import { runDigestEmail } from "./digest/job.js";
 
 // Optional filters for targeted/manual runs (comma-separated ids).
 const csv = (v?: string): string[] | null => (v ? v.split(",").map((s) => s.trim()) : null);
@@ -254,6 +255,11 @@ export async function run(
         logger.error({ collector: "meta-own-brand", err }, "own-brand social failed (isolated)");
       }
     }
+  }
+
+  // ── Daily competitor digest email (Subsystem C) — final phase ──
+  if (optionalEnv("RESEND_API_KEY")) {
+    await runDigestEmail(db).catch((err) => logger.error({ err }, "digest phase error"));
   }
 
   logger.info({ ...summary, failures: summary.failures.length }, "ingestion run complete");

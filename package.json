@@ -19,7 +19,8 @@
     "db:seed": "node db/dist/seed.js",
     "ingest": "node ingestion/dist/index.js",
     "ingest:status": "node ingestion/dist/status.js",
-    "validate": "node ingestion/dist/validation/run.js"
+    "validate": "node ingestion/dist/validation/run.js",
+    "digest:email": "node ingestion/dist/digest/cli.js"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.1",
