@@ -100,13 +100,18 @@ ${blocks}`;
 ${block("mk")}`;
 }
 
-/** Call Gemini with the given prompt as the system instruction. Returns null on any failure. */
+/**
+ * Call Gemini with the given prompt as the system instruction. Returns null on any failure.
+ * `apiKey` (when provided) overrides the `GEMINI_API_KEY` env var — lets the key come from the
+ * DB-backed setting. Falls back to env when `apiKey` is omitted.
+ */
 export async function geminiNarrate(
   digest: DigestResult,
   promptBody: string,
+  apiKey?: string,
   model = MODEL,
 ): Promise<string | null> {
-  const key = optionalEnv("GEMINI_API_KEY");
+  const key = apiKey ?? optionalEnv("GEMINI_API_KEY");
   if (!key) return null;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
   try {
@@ -159,9 +164,10 @@ ${inner}
 export async function renderDigestWithPrompt(
   digest: DigestResult,
   promptBody: string,
+  apiKey?: string,
 ): Promise<{ subject: string; html: string; usedFallback: boolean }> {
   const subject = `MY:TIME — Дневен преглед / Daily digest (${digest.generatedFor})`;
-  const narrated = await geminiNarrate(digest, promptBody);
+  const narrated = await geminiNarrate(digest, promptBody, apiKey);
   const usedFallback = narrated == null;
   const inner = narrated ?? templateDigest(digest);
   return { subject, html: emailShell(subject, inner), usedFallback };

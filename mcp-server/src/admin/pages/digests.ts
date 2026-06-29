@@ -8,6 +8,7 @@ import {
   listSchedules,
   parseRecipients,
   renderDigestWithPrompt,
+  resolveGeminiKey,
   sendDigestEmail,
   upsertPrompt,
   upsertSchedule,
@@ -196,7 +197,8 @@ export async function previewPrompt(req: Request): Promise<{ title: string; body
   try {
     const db = adminWriteDb();
     const digest = await dailyDigest(db);
-    const rendered = await renderDigestWithPrompt(digest, promptBody);
+    const apiKey = await resolveGeminiKey(db);
+    const rendered = await renderDigestWithPrompt(digest, promptBody, apiKey);
     return { title: name || "Preview", body: promptForm(admin, prompt, rendered) };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -220,7 +222,8 @@ export async function testPrompt(
   try {
     const db = adminWriteDb();
     const digest = await dailyDigest(db);
-    const rendered = await renderDigestWithPrompt(digest, promptBody);
+    const apiKey = await resolveGeminiKey(db);
+    const rendered = await renderDigestWithPrompt(digest, promptBody, apiKey);
     await sendDigestEmail(rendered, [admin.email]);
   } catch (err) {
     return { error: `Test send failed: ${err instanceof Error ? err.message : String(err)}` };
