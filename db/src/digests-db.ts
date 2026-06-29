@@ -35,6 +35,12 @@ export function validRecipients(list: string[]): boolean {
   return list.every((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e));
 }
 
+/**
+ * Pure mirror of the `dueSchedules` SQL WHERE clause (kept in sync with it):
+ * enabled, time matches, and not yet run today. `lastRunOn` is a "YYYY-MM-DD"
+ * string, so the `<` compare is chronological. Unit-tested; if this changes,
+ * update the query in `dueSchedules` to match.
+ */
 export function isDue(
   s: { sendAt: string; enabled: boolean; lastRunOn: string | null },
   todayLocal: string,
