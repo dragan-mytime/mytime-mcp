@@ -11,7 +11,6 @@ import {
 } from "@mytime/db";
 import { logger, optionalEnv, requireEnv } from "@mytime/shared";
 import { collectCompetitorAds } from "./ads/meta-ads.js";
-import { runDigestEmail } from "./digest/job.js";
 import { extractHandle } from "./social/_social.js";
 import { socialCollectors } from "./social/index.js";
 import { collectOwnBrandMeta } from "./social/meta-own.js";
@@ -253,11 +252,6 @@ export async function run(runDate: string = today()): Promise<RunSummary> {
         logger.error({ collector: "meta-own-brand", err }, "own-brand social failed (isolated)");
       }
     }
-  }
-
-  // ── Daily competitor digest email (Subsystem C) — final phase ──
-  if (optionalEnv("RESEND_API_KEY")) {
-    await runDigestEmail(db).catch((err) => logger.error({ err }, "digest phase error"));
   }
 
   logger.info({ ...summary, failures: summary.failures.length }, "ingestion run complete");

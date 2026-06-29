@@ -1,5 +1,6 @@
 import { loadTargets, requireEnv } from "@mytime/shared";
 import { createDb } from "./index.js";
+import { seedDigestDefaults } from "./digests-db.js";
 import { locations, socialAccounts, targets } from "./schema.js";
 
 /**
@@ -66,6 +67,7 @@ export async function seed(targetsPath = "config/targets.json"): Promise<void> {
     }
   }
 
+  await seedDigestDefaults(db);
   console.log(`✓ seeded ${all.length} targets (+ online locations, social accounts)`);
 }
 
