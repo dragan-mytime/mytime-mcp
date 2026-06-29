@@ -9,6 +9,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { logger, optionalEnv, type Role, requireEnv } from "@mytime/shared";
 import express from "express";
 import { adminRouter } from "./admin/router.js";
+import { startDigestScheduler } from "./digestScheduler.js";
 import { createMyTimeProvider, handleGoogleCallback } from "./auth/provider.js";
 import { roleSatisfies } from "./auth/roles.js";
 import { readPool } from "./db.js";
@@ -129,5 +130,6 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       { port, tools: tools.map((t) => t.name) },
       "MCP server listening (OAuth 2.1 enabled)",
     );
+    startDigestScheduler();
   });
 }
