@@ -557,6 +557,14 @@ export async function dailyDigest(
   for (const r of inventoryData.stockouts) allTargetIds.add(r.target_id);
   for (const r of inventoryData.priceMoves) allTargetIds.add(r.target_id);
 
+  // Exclude own brand (is_self) — this is a competitor digest. Belt-and-suspenders
+  // in case any signal source slipped a self target in.
+  for (const r of rows<{ id: string }>(
+    await db.execute(sql`SELECT id FROM targets WHERE is_self = true`),
+  )) {
+    allTargetIds.delete(r.id);
+  }
+
   // Index data by target_id for fast lookup
   const salesByTarget = new Map(salesData.agg.map((r) => [r.target_id, r]));
   const salesSamplesByTarget = new Map<string, SalesSampleRow[]>();
