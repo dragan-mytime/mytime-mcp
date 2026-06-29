@@ -18,7 +18,8 @@
     "db:migrate": "pnpm --filter @mytime/db migrate",
     "db:seed": "node db/dist/seed.js",
     "ingest": "node ingestion/dist/index.js",
-    "ingest:status": "node ingestion/dist/status.js"
+    "ingest:status": "node ingestion/dist/status.js",
+    "validate": "node ingestion/dist/validation/run.js"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.1",

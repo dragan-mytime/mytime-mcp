@@ -6,3 +6,11 @@ export interface SiteVerifier {
   /** Extract ground truth from a fetched page (html primary, markdown optional). */
   extract(html: string, markdown: string, url: string): LiveSnapshot;
 }
+
+import { webJsonLdVerifier } from "./web-jsonld.js";
+
+export const verifiers: SiteVerifier[] = [webJsonLdVerifier];
+
+export function verifierFor(targetId: string): SiteVerifier | undefined {
+  return verifiers.find((v) => v.targets.includes(targetId));
+}
