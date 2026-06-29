@@ -1,12 +1,18 @@
 import {
   dailyDigest,
   deletePrompt,
+  deleteSchedule,
   getPrompt,
+  getSchedule,
   listPrompts,
   listSchedules,
+  parseRecipients,
   renderDigestWithPrompt,
   sendDigestEmail,
   upsertPrompt,
+  upsertSchedule,
+  validRecipients,
+  validSendAt,
 } from "@mytime/db";
 import type { Request } from "express";
 import { adminWriteDb } from "../../writePool.js";
@@ -221,4 +227,129 @@ export async function testPrompt(
   }
   const dest = id && id !== "new" ? `/admin/digests/prompts/${id}` : "/admin/digests";
   return { redirect: dest, flash: `Test sent to ${admin.email}` };
+}
+
+// ── Scheduler editor ───────────────────────────────────────────────────────
+
+function scheduleForm(
+  admin: { csrf: string },
+  schedule: {
+    id: string;
+    name: string;
+    promptId: string;
+    sendAt: string;
+    recipients: string[] | null;
+    enabled: boolean;
+  } | null,
+  prompts: { id: string; name: string }[],
+): string {
+  const isNew = schedule == null;
+  const id = schedule?.id ?? "new";
+  const options = prompts
+    .map(
+      (p) =>
+        `<option value="${esc(p.id)}"${schedule?.promptId === p.id ? " selected" : ""}>${esc(p.name)}</option>`,
+    )
+    .join("");
+  const recipientsText = (schedule?.recipients ?? []).join("\n");
+
+  return `
+    <p class="note" style="margin:-.5rem 0 1.25rem;"><a href="/admin/digests">← Digests</a></p>
+    <div class="card">
+      <form method="POST" action="/admin/digests/schedules">
+        ${csrfField(admin.csrf)}
+        ${isNew ? "" : `<input type="hidden" name="id" value="${esc(id)}">`}
+        <label for="s-name">Name</label>
+        <input id="s-name" type="text" name="name" value="${esc(schedule?.name ?? "")}" placeholder="Daily 07:00">
+        <label for="s-prompt">Prompt</label>
+        <select id="s-prompt" name="prompt_id">${options || '<option value="">— no prompts —</option>'}</select>
+        <label for="s-time">Send at (Europe/Skopje)</label>
+        <input id="s-time" type="time" name="send_at" value="${esc(schedule?.sendAt ?? "07:00")}">
+        <label for="s-rcpt">Recipients (one per line; blank = use global Recipients)</label>
+        <textarea id="s-rcpt" name="recipients" placeholder="name@example.com">${esc(recipientsText)}</textarea>
+        <label style="font-weight:500;margin-top:.4rem;">
+          <input type="checkbox" name="enabled" value="1"${schedule?.enabled !== false ? " checked" : ""}> Enabled
+        </label>
+        <div style="display:flex;flex-wrap:wrap;gap:.6rem;margin-top:1.1rem;">
+          <button type="submit" class="btn btn-primary" name="action" value="save">Save</button>
+          ${isNew ? "" : `<button type="submit" class="btn btn-danger" name="action" value="delete" formnovalidate>Delete</button>`}
+          <a class="btn" style="border-color:var(--border);color:var(--slate);" href="/admin/digests">Cancel</a>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+export async function renderScheduleEdit(req: Request): Promise<{ title: string; body: string }> {
+  const admin = (req as AdminReq).admin;
+  const id = String((req.params as Record<string, string>).id ?? "").trim();
+  const db = adminWriteDb();
+  const prompts = await listPrompts(db);
+  if (id === "new") {
+    return { title: "New scheduler", body: scheduleForm(admin, null, prompts) };
+  }
+  const schedule = await getSchedule(db, id);
+  if (!schedule) {
+    return {
+      title: "Digests",
+      body: `<p class="error">Scheduler not found.</p><p><a class="btn" style="border-color:var(--border);color:var(--slate);" href="/admin/digests">← Back</a></p>`,
+    };
+  }
+  return {
+    title: `Edit ${schedule.name}`,
+    body: scheduleForm(
+      admin,
+      {
+        id: schedule.id,
+        name: schedule.name,
+        promptId: schedule.promptId,
+        sendAt: schedule.sendAt,
+        recipients: (schedule.recipients as string[] | null) ?? null,
+        enabled: schedule.enabled,
+      },
+      prompts,
+    ),
+  };
+}
+
+export async function submitSchedule(
+  req: Request,
+): Promise<{ redirect: string; flash?: string } | { error: string }> {
+  const admin = (req as AdminReq).admin;
+  const body = (req as AdminReq).body;
+  if (!checkCsrf(admin.csrf, body.csrf)) return { error: "Bad CSRF" };
+  const db = adminWriteDb();
+  const action = String(body.action ?? "");
+  const id = String(body.id ?? "").trim();
+
+  if (action === "delete") {
+    if (!id) return { error: "Missing scheduler id" };
+    await deleteSchedule(db, id);
+    return { redirect: "/admin/digests", flash: `Deleted scheduler ${id}` };
+  }
+
+  if (action === "save") {
+    const name = String(body.name ?? "").trim();
+    const promptId = String(body.prompt_id ?? "").trim();
+    const sendAt = String(body.send_at ?? "").trim();
+    if (!name) return { error: "Name is required" };
+    if (!promptId) return { error: "Pick a prompt (create one first if none exist)" };
+    if (!validSendAt(sendAt)) return { error: `Invalid send time: ${sendAt}` };
+    const recipients = parseRecipients(String(body.recipients ?? ""));
+    if (recipients.length > 0 && !validRecipients(recipients)) {
+      return { error: "One or more recipients are not valid email addresses" };
+    }
+    const enabled = body.enabled === "1" || body.enabled === "on";
+    await upsertSchedule(db, {
+      id: id || undefined,
+      name,
+      promptId,
+      sendAt,
+      recipients: recipients.length > 0 ? recipients : null,
+      enabled,
+    });
+    return { redirect: "/admin/digests", flash: `Saved ${name}` };
+  }
+
+  return { error: `Unknown action: ${action}` };
 }

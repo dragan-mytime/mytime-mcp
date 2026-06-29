@@ -84,6 +84,8 @@ export function adminRouter(): Router {
   r.post("/digests/prompts", submitFn(digests.submitPrompt));
   r.post("/digests/prompts/:id/preview", editPage(digests.previewPrompt));
   r.post("/digests/prompts/:id/test", submitFn(digests.testPrompt));
+  r.get("/digests/schedules/:id", editPage(digests.renderScheduleEdit));
+  r.post("/digests/schedules", submitFn(digests.submitSchedule));
   r.get("/targets", page("Targets", targets));
   r.get("/targets/:id", async (req: Request, res: Response) => {
     const { title, body } = await targets.renderEdit(req);
