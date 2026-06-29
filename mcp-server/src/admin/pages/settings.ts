@@ -1,6 +1,7 @@
-import { allSettings, setSetting } from "@mytime/db";
+import { allSettings, maskGeminiKey, setSetting } from "@mytime/db";
 import type { Request } from "express";
 import { adminWriteDb } from "../../writePool.js";
+import { isSuperAdmin } from "../auth.js";
 import { csrfField, esc } from "../render.js";
 import { checkCsrf } from "../session.js";
 
@@ -39,6 +40,26 @@ export async function render(req: Request): Promise<string> {
 
   const checkedAttr = vals.digest_enabled ? " checked" : "";
 
+  // Super-admin only: the Gemini API key (masked, never echoed in full).
+  const geminiStored =
+    typeof stored["gemini_api_key"] === "string" ? stored["gemini_api_key"] : null;
+  const geminiField = isSuperAdmin(admin.email)
+    ? `
+        <hr style="border:none;border-top:1px solid var(--border);margin:1.25rem 0;">
+        <label>Gemini API key<br>
+          <small class="note">
+            Current: <strong>${esc(maskGeminiKey(geminiStored))}</strong>.
+            Paste a new key to replace it; leave blank to keep. Drives digest AI narration.
+          </small>
+          <input type="password" name="gemini_api_key" autocomplete="off"
+            placeholder="AIza… (leave blank to keep current)">
+        </label>
+        <label style="display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem;">
+          <input type="checkbox" name="gemini_api_key_remove" value="1">
+          Remove stored key (fall back to server .env)
+        </label>`
+    : "";
+
   return `
     <div class="card">
       <form method="POST" action="/admin/settings">
@@ -66,6 +87,7 @@ export async function render(req: Request): Promise<string> {
           <input type="checkbox" name="digest_enabled" value="1"${checkedAttr}>
           Digest enabled
         </label>
+        ${geminiField}
 
         <button type="submit" class="btn btn-primary">Save</button>
       </form>
@@ -106,6 +128,20 @@ export async function submit(
   await setSetting(db, "ad_results_limit", adLimit);
   await setSetting(db, "web_max_products", webMax);
   await setSetting(db, "digest_enabled", digestEnabled);
+
+  // Gemini API key — super-admin only; never trust the form for the gate.
+  if (isSuperAdmin(admin.email)) {
+    const remove = body["gemini_api_key_remove"] === "1" || body["gemini_api_key_remove"] === "on";
+    const newKey = String(body["gemini_api_key"] ?? "").trim();
+    if (remove) {
+      // Store "" (not null) — the value column is jsonb NOT NULL; resolveGeminiKey
+      // treats an empty string as "not set" and falls back to the server .env.
+      await setSetting(db, "gemini_api_key", "");
+    } else if (newKey) {
+      await setSetting(db, "gemini_api_key", newKey);
+    }
+    // blank + not removing → leave the stored key unchanged
+  }
 
   return { redirect: "/admin/settings", flash: "Settings saved" };
 }

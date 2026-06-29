@@ -1,11 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
   isDue,
+  maskGeminiKey,
   parseRecipients,
   slugify,
   validRecipients,
   validSendAt,
 } from "../src/digests-db.js";
+
+describe("maskGeminiKey", () => {
+  it("reports not set for empty/null/whitespace", () => {
+    expect(maskGeminiKey(null)).toBe("not set");
+    expect(maskGeminiKey(undefined)).toBe("not set");
+    expect(maskGeminiKey("   ")).toBe("not set");
+  });
+  it("shows only the last 4 chars of a key", () => {
+    expect(maskGeminiKey("AIzaSyABCD1234")).toBe("set (…1234)");
+  });
+});
 
 describe("slugify", () => {
   it("kebab-cases and trims", () => {

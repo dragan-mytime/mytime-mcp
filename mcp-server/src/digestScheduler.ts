@@ -5,6 +5,7 @@ import {
   markScheduleRan,
   recordRun,
   renderDigestWithPrompt,
+  resolveGeminiKey,
   resolveRecipients,
   sendDigestEmail,
 } from "@mytime/db";
@@ -37,7 +38,8 @@ export async function tick(db: Db, now: Date = new Date()): Promise<void> {
     const startedAt = new Date();
     try {
       const digest = await dailyDigest(db);
-      const mail = await renderDigestWithPrompt(digest, s.body);
+      const apiKey = await resolveGeminiKey(db);
+      const mail = await renderDigestWithPrompt(digest, s.body, apiKey);
       const to = await resolveRecipients(db, s);
       await sendDigestEmail(mail, to);
       await markScheduleRan(db, s.id, date);

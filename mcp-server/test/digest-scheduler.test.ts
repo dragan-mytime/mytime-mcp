@@ -5,6 +5,7 @@ const markScheduleRan = vi.fn(async () => {});
 const dailyDigest = vi.fn(async () => ({ generatedFor: "2026-06-29", note: "", competitors: [] }));
 const renderDigestWithPrompt = vi.fn(async () => ({ subject: "s", html: "h", usedFallback: true }));
 const resolveRecipients = vi.fn(async () => ["dragan@mytime.mk"]);
+const resolveGeminiKey = vi.fn(async () => undefined);
 const recordRun = vi.fn(async () => {});
 let dueRows: { id: string; name: string; body: string; recipients: string[] | null }[] = [];
 const dueSchedules = vi.fn(async () => dueRows);
@@ -15,6 +16,7 @@ vi.mock("@mytime/db", () => ({
   markScheduleRan,
   renderDigestWithPrompt,
   resolveRecipients,
+  resolveGeminiKey,
   recordRun,
   sendDigestEmail,
 }));

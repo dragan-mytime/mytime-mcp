@@ -12,6 +12,16 @@ import {
   verifySession,
 } from "./session.js";
 
+/**
+ * True when `email` is the configured super-admin (defaults to dragan@mytime.mk).
+ * Super-admin gates secret-bearing settings (e.g. the Gemini API key) that ordinary
+ * admins must not see or edit.
+ */
+export function isSuperAdmin(email: string): boolean {
+  const superEmail = (optionalEnv("MCP_SUPER_ADMIN_EMAIL", "dragan@mytime.mk") ?? "").toLowerCase();
+  return superEmail !== "" && email.trim().toLowerCase() === superEmail;
+}
+
 /** Build the OAuth2Client pointed at the admin callback URL. */
 function adminClient(): OAuth2Client {
   const base = requireEnv("MCP_PUBLIC_URL").replace(/\/$/, "");

@@ -1,3 +1,4 @@
+import { optionalEnv } from "@mytime/shared";
 import { and, asc, eq, isNull, lt, or } from "drizzle-orm";
 import type { Db } from "./index.js";
 import {
@@ -7,6 +8,22 @@ import {
   digestSchedules,
 } from "./schema.js";
 import { getSetting } from "./settings.js";
+
+// ── Gemini API key (DB setting, env fallback) ──────────────────────────────
+
+/** The Gemini API key: DB setting `gemini_api_key` (trimmed, non-empty) else env, else undefined. */
+export async function resolveGeminiKey(db: Db): Promise<string | undefined> {
+  const stored = await getSetting<string | null>(db, "gemini_api_key", null);
+  const fromDb = typeof stored === "string" ? stored.trim() : "";
+  return fromDb || optionalEnv("GEMINI_API_KEY") || undefined;
+}
+
+/** Mask a key for display — never reveal the full value. "not set" or "set (…1234)". */
+export function maskGeminiKey(key: string | null | undefined): string {
+  const k = (key ?? "").trim();
+  if (!k) return "not set";
+  return `set (…${k.slice(-4)})`;
+}
 
 // ── Pure helpers (unit-tested without a DB) ────────────────────────────────
 
