@@ -4,10 +4,12 @@ import {
   ensureSocialAccount,
   ensureTargetAndLocation,
   recordRun,
+  writeAdObservations,
   writeObservations,
   writeSocialMetrics,
 } from "@mytime/db";
 import { loadTargets, logger, optionalEnv, requireEnv } from "@mytime/shared";
+import { collectCompetitorAds } from "./ads/meta-ads.js";
 import { extractHandle } from "./social/_social.js";
 import { socialCollectors } from "./social/index.js";
 import { collectOwnBrandMeta } from "./social/meta-own.js";
@@ -154,6 +156,53 @@ export async function run(
         startedAt,
       }).catch(() => {});
       logger.error({ collector: sc.id, err }, "social collector failed (isolated)");
+    }
+  }
+
+  // ── Competitor ad intelligence: Meta Ad Library via Apify (Subsystem B) ──
+  if (optionalEnv("APIFY_TOKEN") && (!onlyCollectors || onlyCollectors.includes("meta-ads"))) {
+    const pages = targets
+      .filter(
+        (t) =>
+          !t.is_self && (!onlyTargets || onlyTargets.includes(t.id)) && Boolean(t.social.facebook),
+      )
+      .map((t) => ({ targetId: t.id, url: t.social.facebook as string }));
+    if (pages.length) {
+      summary.attempted++;
+      const startedAt = new Date();
+      try {
+        const byTarget = await collectCompetitorAds(pages, runDate);
+        let rows = 0;
+        for (const [tid, ads] of byTarget) rows += await writeAdObservations(db, tid, runDate, ads);
+        summary.succeeded++;
+        summary.rows += rows;
+        await recordRun(db, {
+          runDate,
+          collector: "meta-ads",
+          targetId: null,
+          status: "success",
+          rowsWritten: rows,
+          startedAt,
+        });
+        logger.info(
+          { collector: "meta-ads", pages: pages.length, rows },
+          "competitor ads collected",
+        );
+      } catch (err) {
+        summary.failed++;
+        const error = err instanceof Error ? err.message : String(err);
+        summary.failures.push({ collector: "meta-ads", target: "all", error });
+        await recordRun(db, {
+          runDate,
+          collector: "meta-ads",
+          targetId: null,
+          status: "failed",
+          rowsWritten: 0,
+          error,
+          startedAt,
+        }).catch(() => {});
+        logger.error({ collector: "meta-ads", err }, "competitor ads failed (isolated)");
+      }
     }
   }
 
