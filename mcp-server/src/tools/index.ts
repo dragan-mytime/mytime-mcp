@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { dailyDigest } from "@mytime/db";
 import {
   compareMarketShare,
   competitorAds,
@@ -7,6 +8,7 @@ import {
   socialBenchmark,
 } from "../analytics.js";
 import { listAuthorizedUsers } from "../auth/authorized-users.js";
+import { readDb } from "../db.js";
 import type { McpToolDef } from "./_tool.js";
 
 /**
@@ -114,5 +116,19 @@ export const tools: McpToolDef[] = [
     requiredRole: "admin",
     inputSchema: {},
     run: (pool) => listAuthorizedUsers(pool),
+  },
+  {
+    name: "daily_digest",
+    title: "Daily competitor digest (day-over-day changes)",
+    description:
+      "What competitors did since the last snapshot: new/ended sales campaigns, new/stopped ads + long-runners, follower moves, new products/stockouts/price moves. Returns structured data — narrate it as a briefing (the user may ask in English or Macedonian). Figures are estimates.",
+    requiredRole: "analyst",
+    inputSchema: {
+      competitor: z
+        .string()
+        .optional()
+        .describe("target id, e.g. 'b-watch'; omit for all competitors"),
+    },
+    run: (_pool, a) => dailyDigest(readDb(), a as { competitor?: string }),
   },
 ];
