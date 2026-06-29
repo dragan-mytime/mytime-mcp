@@ -60,6 +60,10 @@ export const targets = pgTable("targets", {
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  platform: text("platform"),            // web.platform e.g. "woocommerce"
+  social: jsonb("social"),               // { instagram?, facebook?, tiktok? }
+  registry: jsonb("registry"),           // { central_registry_id }
+  webLocations: jsonb("web_locations"),  // web.locations array
 });
 
 /**
@@ -259,6 +263,16 @@ export const adObservations = pgTable(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
+// App settings: global key-value configuration store
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const appSettings = pgTable("app_settings", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Auth whitelist (managed in the Supabase table editor — brief §7)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -380,3 +394,4 @@ export type AuthorizedUserRow = typeof authorizedUsers.$inferSelect;
 export type RegistryFinancialRow = typeof registryFinancials.$inferSelect;
 export type IngestionRunRow = typeof ingestionRuns.$inferSelect;
 export type AdObservationRow = typeof adObservations.$inferSelect;
+export type AppSettingRow = typeof appSettings.$inferSelect;

@@ -3,18 +3,19 @@ import {
   createDb,
   ensureSocialAccount,
   ensureTargetAndLocation,
+  loadTargetsFromDb,
   recordRun,
   writeAdObservations,
   writeObservations,
   writeSocialMetrics,
 } from "@mytime/db";
-import { loadTargets, logger, optionalEnv, requireEnv } from "@mytime/shared";
+import { logger, optionalEnv, requireEnv } from "@mytime/shared";
 import { collectCompetitorAds } from "./ads/meta-ads.js";
+import { runDigestEmail } from "./digest/job.js";
 import { extractHandle } from "./social/_social.js";
 import { socialCollectors } from "./social/index.js";
 import { collectOwnBrandMeta } from "./social/meta-own.js";
 import { productCollectors } from "./sources/index.js";
-import { runDigestEmail } from "./digest/job.js";
 
 // Optional filters for targeted/manual runs (comma-separated ids).
 const csv = (v?: string): string[] | null => (v ? v.split(",").map((s) => s.trim()) : null);
@@ -38,12 +39,9 @@ const today = (): string => new Date().toISOString().slice(0, 10);
  * Per-source failure isolation: one collector throwing logs and continues — it
  * never aborts the others. Re-running the same day upserts, never duplicates.
  */
-export async function run(
-  runDate: string = today(),
-  targetsPath = "config/targets.json",
-): Promise<RunSummary> {
+export async function run(runDate: string = today()): Promise<RunSummary> {
   const db = createDb(requireEnv("DATABASE_URL"));
-  const targets = loadTargets(targetsPath);
+  const targets = await loadTargetsFromDb(db);
   const summary: RunSummary = {
     runDate,
     attempted: 0,
