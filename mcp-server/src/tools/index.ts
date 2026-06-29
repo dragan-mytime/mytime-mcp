@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   compareMarketShare,
+  competitorAds,
   inventoryVelocity,
   priceAssortment,
   socialBenchmark,
@@ -86,6 +87,24 @@ export const tools: McpToolDef[] = [
       brand: z.string().optional().describe("brand name (case-insensitive)"),
     },
     run: (pool, a) => priceAssortment(pool, a as { competitor?: string; brand?: string }),
+  },
+  {
+    name: "competitor_ads",
+    title: "Competitor ad intelligence (Meta Ad Library)",
+    description:
+      "Currently-running Meta ads per competitor: active-ad count, ad longevity (days running = the performance proxy; spend/impressions are NOT public for these ads), newest creatives, CTAs, and top landing pages.",
+    requiredRole: "analyst",
+    inputSchema: {
+      competitor: z.string().optional().describe("target id, e.g. 'saat-saat'; omit for all"),
+      days: z
+        .number()
+        .int()
+        .positive()
+        .max(365)
+        .optional()
+        .describe("lookback window (default 30)"),
+    },
+    run: (pool, a) => competitorAds(pool, a as { competitor?: string; days?: number }),
   },
   {
     name: "list_authorized_users",

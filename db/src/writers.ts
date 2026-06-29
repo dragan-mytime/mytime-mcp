@@ -1,7 +1,14 @@
-import type { ProductObservation, SocialMetricValue, SocialPlatform, Target } from "@mytime/shared";
+import type {
+  AdObservation,
+  ProductObservation,
+  SocialMetricValue,
+  SocialPlatform,
+  Target,
+} from "@mytime/shared";
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "./index.js";
 import {
+  adObservations,
   ingestionRuns,
   inventorySnapshots,
   locations,
@@ -242,6 +249,44 @@ export async function writeSocialMetrics(
       set: { value: sql`excluded.value`, source: sql`excluded.source` },
     });
   return metrics.length;
+}
+
+/** Idempotently upsert ad observations (target × adArchiveId × date). Returns count written. */
+export async function writeAdObservations(
+  db: Db,
+  targetId: string,
+  runDate: string,
+  ads: AdObservation[],
+): Promise<number> {
+  if (ads.length === 0) return 0;
+  const values = ads.map((a) => ({
+    targetId,
+    adArchiveId: a.adArchiveId,
+    capturedDate: runDate,
+    startedRunningDate: a.startedRunningDate,
+    daysRunning: a.daysRunning,
+    platforms: a.platforms,
+    ctaType: a.ctaType,
+    linkUrl: a.linkUrl,
+    adTitle: a.adTitle,
+    adBody: a.adBody,
+    mediaType: a.mediaType,
+    mediaUrl: a.mediaUrl,
+    snapshotUrl: a.snapshotUrl,
+  }));
+  await db
+    .insert(adObservations)
+    .values(values)
+    .onConflictDoUpdate({
+      target: [adObservations.targetId, adObservations.adArchiveId, adObservations.capturedDate],
+      set: {
+        daysRunning: sql`excluded.days_running`,
+        adBody: sql`excluded.ad_body`,
+        linkUrl: sql`excluded.link_url`,
+        mediaUrl: sql`excluded.media_url`,
+      },
+    });
+  return ads.length;
 }
 
 /** Append a row to the ingestion run log (observability / run summary). */

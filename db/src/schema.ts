@@ -228,6 +228,37 @@ export const socialMetrics = pgTable(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Ad intelligence: ad_observations (Facebook/Instagram Ad Library per-target)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const adObservations = pgTable(
+  "ad_observations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    targetId: text("target_id")
+      .notNull()
+      .references(() => targets.id, { onDelete: "cascade" }),
+    adArchiveId: text("ad_archive_id").notNull(),
+    capturedDate: date("captured_date").notNull(),
+    startedRunningDate: date("started_running_date"),
+    daysRunning: integer("days_running"),
+    platforms: text("platforms").array(),
+    ctaType: text("cta_type"),
+    linkUrl: text("link_url"),
+    adTitle: text("ad_title"),
+    adBody: text("ad_body"),
+    mediaType: text("media_type"),
+    mediaUrl: text("media_url"),
+    snapshotUrl: text("snapshot_url"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("ad_observations_target_ad_date_uq").on(t.targetId, t.adArchiveId, t.capturedDate),
+    index("ad_observations_target_date_idx").on(t.targetId, t.capturedDate),
+  ],
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Auth whitelist (managed in the Supabase table editor — brief §7)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -348,3 +379,4 @@ export type SocialMetricRow = typeof socialMetrics.$inferSelect;
 export type AuthorizedUserRow = typeof authorizedUsers.$inferSelect;
 export type RegistryFinancialRow = typeof registryFinancials.$inferSelect;
 export type IngestionRunRow = typeof ingestionRuns.$inferSelect;
+export type AdObservationRow = typeof adObservations.$inferSelect;

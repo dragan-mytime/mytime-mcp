@@ -8,6 +8,13 @@
       "when": 1782595979290,
       "tag": "0000_regular_ink",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1782746994622,
+      "tag": "0001_clumsy_wild_pack",
+      "breakpoints": true
     }
   ]
 }
