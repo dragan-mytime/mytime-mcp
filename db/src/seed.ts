@@ -1,6 +1,6 @@
 import { loadTargets, requireEnv } from "@mytime/shared";
-import { createDb } from "./index.js";
 import { seedDigestDefaults } from "./digests-db.js";
+import { createDb } from "./index.js";
 import { locations, socialAccounts, targets } from "./schema.js";
 
 /**
