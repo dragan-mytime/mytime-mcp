@@ -56,6 +56,10 @@ export function buildMcpServer(): McpServer {
 /** Express app: OAuth 2.1 endpoints + Google callback + protected /mcp + /health. */
 export function createApp(): express.Express {
   const app = express();
+  // Behind a single nginx reverse proxy that sets X-Forwarded-For. Trust that one
+  // hop so req.ip is the real client (and express-rate-limit in the MCP auth router
+  // stops throwing ERR_ERL_UNEXPECTED_X_FORWARDED_FOR).
+  app.set("trust proxy", 1);
   const pool = readPool();
   const provider = createMyTimeProvider(pool);
   const issuerUrl = new URL(requireEnv("MCP_PUBLIC_URL"));
