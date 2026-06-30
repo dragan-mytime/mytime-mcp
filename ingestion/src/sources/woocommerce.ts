@@ -1,4 +1,4 @@
-import type { ProductObservation } from "@mytime/shared";
+import { optionalEnv, type ProductObservation } from "@mytime/shared";
 import {
   cleanText,
   deriveDiscount,
@@ -13,6 +13,39 @@ const BROWSER_UA =
 const PER_PAGE = 100;
 const MAX_PAGES = 100; // safety cap
 const ENRICH_CONCURRENCY = 8; // parallel product-page fetches for on-sale enrichment
+
+/**
+ * WooCommerce sites whose origin is behind a Cloudflare JS challenge (the whole site
+ * 403s a plain fetch with a "Just a moment…" page). Their Store API + pages are fetched
+ * through Firecrawl, which renders the challenge in a real browser and returns the body.
+ */
+const CLOUDFLARE_SITES = new Set<string>(["watch-club"]);
+
+/** Scrape a URL's raw body via Firecrawl (passes Cloudflare's JS challenge). */
+async function firecrawlText(url: string): Promise<string> {
+  const key = optionalEnv("FIRECRAWL_API_KEY");
+  if (!key) throw new Error("FIRECRAWL_API_KEY required for a Cloudflare-protected site");
+  const res = await fetch("https://api.firecrawl.dev/v2/scrape", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ url, formats: ["rawHtml"], onlyMainContent: false }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  const j = (await res.json()) as { success?: boolean; data?: { rawHtml?: string } };
+  if (!j.success || !j.data?.rawHtml) throw new Error(`Firecrawl scrape failed for ${url}`);
+  return j.data.rawHtml;
+}
+
+/** Fetch a URL's text either directly or, for Cloudflare-protected sites, via Firecrawl. */
+async function wooFetchText(url: string, viaFirecrawl: boolean, ua: string): Promise<string> {
+  if (viaFirecrawl) return firecrawlText(url);
+  const res = await fetch(url, {
+    headers: { "User-Agent": ua },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.text();
+}
 
 /**
  * First monetary amount in an HTML fragment: the leading digit run that follows a
@@ -223,17 +256,19 @@ export const woocommerceCollector: ProductCollector = {
   appliesTo: (t) => t.web.platform === "woocommerce" && !!t.web.url,
   async collect({ target }: CollectorContext): Promise<ProductObservation[]> {
     const base = new URL(target.web.url ?? "").origin;
+    const viaFc = CLOUDFLARE_SITES.has(target.id);
 
-    // Phase 1: page through the Store API and build observations synchronously
+    // Phase 1: page through the Store API and build observations synchronously.
+    // Cloudflare-protected sites (viaFc) are routed through Firecrawl.
     const rawProducts: WcProduct[] = [];
     for (let page = 1; page <= MAX_PAGES; page++) {
       const url = `${base}/wp-json/wc/store/v1/products?per_page=${PER_PAGE}&page=${page}`;
-      const res = await fetch(url, {
-        headers: { "User-Agent": UA },
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!res.ok) throw new Error(`${target.id} WC API HTTP ${res.status} (page ${page})`);
-      const list = (await res.json()) as WcProduct[];
+      let list: WcProduct[];
+      try {
+        list = JSON.parse(await wooFetchText(url, viaFc, UA)) as WcProduct[];
+      } catch (err) {
+        throw new Error(`${target.id} WC API failed (page ${page}): ${(err as Error).message}`);
+      }
       if (!Array.isArray(list) || list.length === 0) break;
       for (const p of list) rawProducts.push(p);
       if (list.length < PER_PAGE) break;
@@ -279,12 +314,9 @@ export const woocommerceCollector: ProductCollector = {
         const item = onSale[cursor++];
         if (!item) continue;
         try {
-          const pageRes = await fetch(item.permalink, {
-            headers: { "User-Agent": BROWSER_UA },
-            signal: AbortSignal.timeout(30_000),
-          });
-          if (!pageRes.ok) continue;
-          const { regular, sale } = parseWooSalePrice(await pageRes.text());
+          const { regular, sale } = parseWooSalePrice(
+            await wooFetchText(item.permalink, viaFc, BROWSER_UA),
+          );
           // Only override if we got a genuine discount from the page
           if (regular != null && sale != null && sale < regular) {
             const discount = deriveDiscount(regular, sale);
