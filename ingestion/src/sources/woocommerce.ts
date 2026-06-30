@@ -21,19 +21,33 @@ const ENRICH_CONCURRENCY = 8; // parallel product-page fetches for on-sale enric
  */
 const CLOUDFLARE_SITES = new Set<string>(["watch-club"]);
 
-/** Scrape a URL's raw body via Firecrawl (passes Cloudflare's JS challenge). */
-async function firecrawlText(url: string): Promise<string> {
+/**
+ * Scrape a URL's raw body via Firecrawl (passes Cloudflare's JS challenge).
+ * Retries transient failures (Firecrawl 5xx / "Bad Gateway" / unsuccessful renders) with
+ * backoff — a single hiccup mid-pagination must not abort the whole site's collection.
+ */
+async function firecrawlText(url: string, attempts = 3): Promise<string> {
   const key = optionalEnv("FIRECRAWL_API_KEY");
   if (!key) throw new Error("FIRECRAWL_API_KEY required for a Cloudflare-protected site");
-  const res = await fetch("https://api.firecrawl.dev/v2/scrape", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ url, formats: ["rawHtml"], onlyMainContent: false }),
-    signal: AbortSignal.timeout(120_000),
-  });
-  const j = (await res.json()) as { success?: boolean; data?: { rawHtml?: string } };
-  if (!j.success || !j.data?.rawHtml) throw new Error(`Firecrawl scrape failed for ${url}`);
-  return j.data.rawHtml;
+  let lastErr = "";
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const res = await fetch("https://api.firecrawl.dev/v2/scrape", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ url, formats: ["rawHtml"], onlyMainContent: false }),
+        signal: AbortSignal.timeout(120_000),
+      });
+      if (!res.ok) throw new Error(`Firecrawl HTTP ${res.status}`);
+      const j = (await res.json()) as { success?: boolean; data?: { rawHtml?: string } };
+      if (!j.success || !j.data?.rawHtml) throw new Error("Firecrawl render unsuccessful");
+      return j.data.rawHtml;
+    } catch (err) {
+      lastErr = err instanceof Error ? err.message : String(err);
+      if (attempt < attempts) await new Promise((r) => setTimeout(r, 2000 * attempt));
+    }
+  }
+  throw new Error(`Firecrawl failed for ${url} after ${attempts} attempts: ${lastErr}`);
 }
 
 /** Fetch a URL's text either directly or, for Cloudflare-protected sites, via Firecrawl. */
