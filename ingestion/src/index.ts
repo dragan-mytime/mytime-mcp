@@ -8,6 +8,7 @@ import {
   writeAdObservations,
   writeObservations,
   writeSocialMetrics,
+  writeSocialPosts,
 } from "@mytime/db";
 import { logger, optionalEnv, requireEnv } from "@mytime/shared";
 import { collectCompetitorAds } from "./ads/meta-ads.js";
@@ -128,6 +129,7 @@ export async function run(runDate: string = today()): Promise<RunSummary> {
         if (!acct) continue;
         const sid = await ensureSocialAccount(db, r.targetId, sc.platform, acct.url, acct.handle);
         rows += await writeSocialMetrics(db, sid, runDate, r.metrics, sc.id);
+        rows += await writeSocialPosts(db, sid, runDate, r.posts ?? []);
       }
       summary.succeeded++;
       summary.rows += rows;
@@ -221,6 +223,7 @@ export async function run(runDate: string = today()): Promise<RunSummary> {
           if (!url) continue;
           const sid = await ensureSocialAccount(db, self.id, r.platform, url);
           rows += await writeSocialMetrics(db, sid, runDate, r.metrics, "meta-own-brand");
+          rows += await writeSocialPosts(db, sid, runDate, r.posts ?? []);
         }
         summary.succeeded++;
         summary.rows += rows;
