@@ -11,8 +11,37 @@ const fakeDigest: DigestResult = {
   competitors: [
     {
       targetId: "competitor-alpha",
-      sales: { newlyDiscounted: 5, ended: 2, onSaleToday: 12, avgPct: 18.5, samples: [] },
-      ads: { activeToday: 3, new: [], stoppedCount: 1, longestRunning: null },
+      sales: {
+        newlyDiscounted: 5,
+        ended: 2,
+        onSaleToday: 12,
+        avgPct: 18.5,
+        samples: [],
+        byBrand: [{ brand: "Tissot", count: 4, avgPct: 25 }],
+        byCategory: [{ category: "Watches", count: 9, avgPct: 20 }],
+      },
+      ads: {
+        activeToday: 3,
+        new: [
+          {
+            adTitle: "Summer sale",
+            linkUrl: "https://x",
+            daysRunning: 2,
+            snapshotUrl: "https://fb/ad",
+            mediaUrl: "https://cdn/ad.jpg",
+            mediaType: "image",
+          },
+        ],
+        stoppedCount: 1,
+        longestRunning: {
+          adTitle: "Evergreen",
+          daysRunning: 45,
+          mediaUrl: "https://cdn/ever.jpg",
+          mediaType: "image",
+          snapshotUrl: "https://fb/ever",
+          linkUrl: "https://x/ever",
+        },
+      },
       social: { followers: { facebook: 120 } },
       inventory: { newProducts: 3, newStockouts: ["X"], priceMoves: [] },
     },
