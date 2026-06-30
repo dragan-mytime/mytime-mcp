@@ -6,7 +6,7 @@ import {
   normalizeGender,
   normalizeType,
   type ProductType,
-  parseModelFromName,
+  parseModelRef,
   toNumber,
 } from "../pipeline/normalize.js";
 import type { CollectorContext, ProductCollector } from "./_collector.js";
@@ -195,12 +195,7 @@ export function parseProduct(html: string, url: string): ProductObservation | nu
   const stockQuantity = qtyMatch?.[1] ? Number(qtyMatch[1]) : null;
   const inStock = avail.includes("instock") || stockQuantity != null;
   const sku = cleanText(node.sku) ?? cleanText(node.mpn);
-  // Prefer a manufacturer-style code from the name when the sku is purely numeric.
-  const nameCode = name?.match(/\b([A-Za-z]{2,}-?[A-Za-z0-9]*\d[A-Za-z0-9-]*)\b/)?.[1] ?? null;
-  const modelRef =
-    sku && !/^\d+$/.test(sku)
-      ? sku.toUpperCase()
-      : (nameCode?.toUpperCase() ?? sku ?? parseModelFromName(name));
+  const modelRef = parseModelRef(name, sku, null);
 
   return {
     externalId: sku ?? url.split("/").filter(Boolean).pop() ?? url,
@@ -268,14 +263,13 @@ export function parseOg(
     metaContent(html, "og:availability") ??
     ""
   ).toLowerCase();
-  const nameCode = name?.match(/\b([A-Za-z]{2,}-?[A-Za-z0-9]*\d[A-Za-z0-9-]*)\b/)?.[1] ?? null;
   const idMatch = url.match(/\/p\/(\d+)/);
 
   return {
     externalId: idMatch?.[1] ?? url.split("/").filter(Boolean).pop() ?? url,
     name: name ?? url,
     brand: normalizeBrand(metaContent(html, "product:brand") ?? metaContent(html, "og:brand")),
-    modelRef: nameCode?.toUpperCase() ?? parseModelFromName(name),
+    modelRef: parseModelRef(name, null, null),
     category: null,
     productType: normalizeType(null, name, opts.typeDefault ?? null),
     gender: normalizeGender(name) ?? opts.genderDefault ?? null,

@@ -1,5 +1,5 @@
 import { optionalEnv, type ProductObservation } from "@mytime/shared";
-import { cleanText, deriveDiscount, toNumber } from "../pipeline/normalize.js";
+import { cleanText, deriveDiscount, parseModelRef, toNumber } from "../pipeline/normalize.js";
 import type { CollectorContext, ProductCollector } from "./_collector.js";
 import { openCloudflareSession } from "./browser-fetch.js";
 
@@ -27,14 +27,13 @@ export function parseListing(html: string): ProductObservation[] {
     if (price == null) continue;
     const id = chunk.match(/data-product-id="([0-9]+)"/)?.[1];
     const img = chunk.match(/<img[^>]+src="([^"]+)"/)?.[1] ?? null;
-    const code = name?.match(/\b([A-Za-z]*\d[A-Za-z0-9]{3,})\b/)?.[1] ?? null;
     const oos = /(?:нема на залиха|out-of-stock|unavailable)/i.test(chunk);
 
     out.push({
       externalId: id ?? url.split("/").filter(Boolean).pop() ?? url,
       name: name ?? url,
       brand: "Pandora", // monobrand franchise
-      modelRef: code?.toUpperCase() ?? null,
+      modelRef: parseModelRef(name, null, null),
       category: null,
       productType: "jewelry",
       gender: "womens",

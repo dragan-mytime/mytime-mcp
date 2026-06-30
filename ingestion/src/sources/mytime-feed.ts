@@ -5,7 +5,7 @@ import {
   deriveDiscount,
   normalizeBrand,
   normalizeType,
-  parseModelFromName,
+  parseModelRef,
   parsePercent,
   toNumber,
 } from "../pipeline/normalize.js";
@@ -62,7 +62,7 @@ function mapItem(it: FeedItem): ProductObservation {
     externalId: String(it.ID ?? name),
     name,
     brand: normalizeBrand(it.brand),
-    modelRef: parseModelFromName(name),
+    modelRef: parseModelRef(name, null, null),
     category: cleanText(it.fileUnder),
     productType: normalizeType(cleanText(it.fileUnder), name),
     gender: null,

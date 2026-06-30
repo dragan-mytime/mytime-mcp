@@ -78,6 +78,62 @@ export function normalizeType(
   return fallback ?? "other";
 }
 
+/** True for strings that look like a manufacturer reference (not a pure db id). */
+function refScore(raw: string): number {
+  const t = raw.replace(/[(),]/g, "").trim();
+  if (t.length < 5) return 0;
+  if (/^[0-9]+$/.test(t)) return 0; // pure number → a db id / year, not a ref
+  if (!/[0-9]/.test(t)) return 0; // no digit → a word
+  if (!/^[A-Za-z0-9.\-/]+$/.test(t)) return 0; // contains spaces/other → not a single code
+  let s = t.length;
+  if (/[.\-/]/.test(t)) s += 3; // internal separators are ref-like
+  if (/[A-Za-z]/.test(t) && /[0-9]/.test(t)) s += 3; // mixed letters+digits
+  return s;
+}
+
+/**
+ * Best manufacturer reference from a product: a ref-like `sku`, else the most
+ * ref-like token anywhere in the `name`, else the `slug`. Uppercased. Used as the
+ * cross-vendor match key (after normalizeModelKey). Returns null if nothing usable.
+ */
+export function parseModelRef(
+  name: string | null,
+  sku: string | null,
+  slug: string | null,
+): string | null {
+  if (sku && refScore(sku) > 0) return sku.replace(/[(),]/g, "").trim().toUpperCase();
+  let best: string | null = null;
+  let bestScore = 0;
+  for (const tok of (name ?? "").split(/\s+/)) {
+    const sc = refScore(tok);
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = tok.replace(/[(),]/g, "").trim();
+    }
+  }
+  if (best) return best.toUpperCase();
+  const s = (slug ?? "").trim();
+  return s.length >= 5 ? s.toUpperCase() : null;
+}
+
+/** Cross-vendor match key: uppercase alphanumerics only; null if < 5 chars. */
+export function normalizeModelKey(ref: string | null): string | null {
+  const k = (ref ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return k.length >= 5 ? k : null;
+}
+
+/** Brand normalized for matching: Casio sub-lines collapsed; G-Shock flagged. */
+export function brandMatchKey(
+  brand: string | null,
+  name: string | null,
+): { brand: string; isGShock: boolean } {
+  const b = (brand ?? "").toUpperCase().trim();
+  const hay = `${b} ${(name ?? "").toUpperCase()}`;
+  const isGShock = /G[\s-]?SHOCK/.test(hay);
+  const norm = b.startsWith("CASIO") ? "CASIO" : b;
+  return { brand: norm, isGShock };
+}
+
 /**
  * Derive the discount fields from a regular and (optional) sale price.
  * Returns nulls when there is no genuine discount (legacy stored 0 here).
