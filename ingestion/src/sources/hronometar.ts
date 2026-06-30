@@ -1,5 +1,10 @@
 import { optionalEnv, type ProductObservation } from "@mytime/shared";
-import { cleanText, deriveDiscount, normalizeGender } from "../pipeline/normalize.js";
+import {
+  cleanText,
+  deriveDiscount,
+  normalizeGender,
+  normalizeType,
+} from "../pipeline/normalize.js";
 import type { CollectorContext, ProductCollector } from "./_collector.js";
 
 const UA = "MyTimeBI/1.0 (+https://mcp.mytimeprime.mk)";
@@ -39,6 +44,23 @@ function parseEuPrice(s: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+const decodeEntities = (h: string): string =>
+  h
+    .replace(/&#x([0-9a-f]+);/gi, (_, c) => String.fromCodePoint(Number.parseInt(c, 16)))
+    .replace(/&#(\d+);/g, (_, c) => String.fromCodePoint(Number(c)));
+
+/**
+ * Read a nopCommerce spec-table value by its (decoded) label. The table has
+ * entity-encoded Cyrillic labels and unclosed cells:
+ *   <td class=spec-name>Пол<td class=spec-value>Машки<tr…>
+ */
+export function specValue(html: string, label: string): string | null {
+  const m = decodeEntities(html).match(
+    new RegExp(`spec-name>\\s*${label}\\s*<td[^>]*>([^<]+)`, "i"),
+  );
+  return cleanText(m?.[1] ?? null);
+}
+
 /** Parse a nopCommerce product page; returns null for non-product pages (categories). */
 export function parseNop(html: string, url: string): ProductObservation | null {
   if (!/product-details-form/.test(html)) return null; // product-page marker
@@ -70,8 +92,9 @@ export function parseNop(html: string, url: string): ProductObservation | null {
     brand: null,
     modelRef: code?.toUpperCase() ?? null,
     category: null,
-    gender: normalizeGender(name),
-    collection: null,
+    productType: normalizeType(null, name, "watches"),
+    gender: normalizeGender(specValue(html, "Пол")) ?? normalizeGender(name),
+    collection: specValue(html, "Колекција"),
     attributes: null,
     url,
     imageUrl: cleanText(img),
