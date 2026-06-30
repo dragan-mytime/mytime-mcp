@@ -39,3 +39,45 @@ describe("parseListingTiles", () => {
     expect(full?.sale ?? null).toBeNull();
   });
 });
+
+import { mapProduct } from "../../src/sources/woocommerce.js";
+
+const wc = (over: Record<string, unknown> = {}) => ({
+  id: 1,
+  name: "JAZZMASTER OPEN HEART",
+  slug: "jazzmaster-open-heart",
+  prices: { regular_price: "4990000", currency_minor_unit: 2, currency_code: "MKD" },
+  is_in_stock: true,
+  categories: [{ name: "Часовници" }],
+  images: [{ src: "https://x/a.jpg" }],
+  permalink: "https://bozinovski.com.mk/proizvod/jazzmaster/",
+  attributes: [],
+  ...over,
+});
+
+describe("mapProduct gender + product type", () => {
+  it("reads Bozinovski gender from the pa_sex attribute", () => {
+    const o = mapProduct(
+      wc({ attributes: [{ taxonomy: "pa_sex", terms: [{ name: "Женски" }] }] }) as never,
+    );
+    expect(o.gender).toBe("womens");
+    expect(o.productType).toBe("watches");
+  });
+  it("reads B-Watch gender from pa_pol", () => {
+    const o = mapProduct(
+      wc({ attributes: [{ taxonomy: "pa_pol", terms: [{ name: "Машки" }] }] }) as never,
+    );
+    expect(o.gender).toBe("mens");
+  });
+  it("falls back to the category string for gender (Watch Club)", () => {
+    const o = mapProduct(
+      wc({ categories: [{ name: "Женски часовници" }], attributes: [] }) as never,
+    );
+    expect(o.gender).toBe("womens");
+    expect(o.productType).toBe("watches");
+  });
+  it("leaves gender null when no slug and category has no gender word", () => {
+    const o = mapProduct(wc({ categories: [{ name: "Часовници" }], attributes: [] }) as never);
+    expect(o.gender ?? null).toBeNull();
+  });
+});

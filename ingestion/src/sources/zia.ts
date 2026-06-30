@@ -1,5 +1,10 @@
 import { optionalEnv, type ProductObservation } from "@mytime/shared";
-import { cleanText, deriveDiscount, normalizeGender } from "../pipeline/normalize.js";
+import {
+  cleanText,
+  deriveDiscount,
+  normalizeGender,
+  normalizeType,
+} from "../pipeline/normalize.js";
 import type { CollectorContext, ProductCollector } from "./_collector.js";
 
 const UA = "MyTimeBI/1.0 (+https://mcp.mytimeprime.mk)";
@@ -27,7 +32,7 @@ function image(it: ZiaItem): string | null {
   return typeof first === "string" ? first : (first.url ?? first.src ?? null);
 }
 
-function map(it: ZiaItem, base: string): ProductObservation {
+export function map(it: ZiaItem, base: string): ProductObservation {
   const price = Number(it.price) || 0;
   const stock = typeof it.stock === "number" ? it.stock : null;
   const name = cleanText(it.name);
@@ -39,7 +44,8 @@ function map(it: ZiaItem, base: string): ProductObservation {
     brand: "Zia",
     modelRef: name,
     category: cleanText(it.category?.name),
-    gender: normalizeGender(it.category?.name) ?? normalizeGender(name),
+    productType: normalizeType(it.category?.name ?? null, name, "jewelry"),
+    gender: normalizeGender(it.category?.name) ?? normalizeGender(name) ?? "womens",
     collection: null,
     attributes: attrs,
     url: `${base}/products/${it._id}`,

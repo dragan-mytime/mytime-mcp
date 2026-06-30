@@ -18,6 +18,7 @@ interface DiscRow {
   brand: string | null;
   category: string | null;
   gender: string | null;
+  product_type: string | null;
   reg: number | null;
   sale: number | null;
   pct: number | null;
@@ -27,6 +28,7 @@ interface MoveRow {
   name: string;
   brand: string | null;
   gender: string | null;
+  product_type: string | null;
   from_price: number | null;
   to_price: number | null;
 }
@@ -34,6 +36,7 @@ interface StockRow {
   target_id: string;
   name: string;
   gender: string | null;
+  product_type: string | null;
 }
 interface AdRow {
   target_id: string;
@@ -66,7 +69,7 @@ async function gather(): Promise<unknown> {
         GROUP BY p.target_id
       ),
       onsale AS (
-        SELECT p.target_id, p.name, p.brand, p.category, p.gender,
+        SELECT p.target_id, p.name, p.brand, p.category, p.gender, p.product_type,
                pr.price::float8 AS reg, pr.sale_price::float8 AS sale, pr.discount_pct::float8 AS pct,
                ROW_NUMBER() OVER (PARTITION BY p.target_id ORDER BY pr.discount_pct DESC NULLS LAST) AS rn
         FROM prices pr
@@ -74,7 +77,7 @@ async function gather(): Promise<unknown> {
         JOIN latest l ON l.target_id = p.target_id AND pr.captured_date = l.d
         WHERE pr.discount_pct > 0
       )
-      SELECT target_id, name, brand, category, gender, reg, sale, pct FROM onsale WHERE rn <= 100
+      SELECT target_id, name, brand, category, gender, product_type, reg, sale, pct FROM onsale WHERE rn <= 100
       ORDER BY target_id, pct DESC`),
     pool.query<AdRow>(`
       WITH latest AS (
@@ -93,41 +96,41 @@ async function gather(): Promise<unknown> {
       FROM a WHERE rn <= 40 ORDER BY target_id, days_running DESC NULLS LAST`),
     pool.query<MoveRow>(`
       WITH ranked AS (
-        SELECT pr.product_id, p.target_id, p.name, p.brand, p.gender, pr.price::float8 AS price,
+        SELECT pr.product_id, p.target_id, p.name, p.brand, p.gender, p.product_type, pr.price::float8 AS price,
                ROW_NUMBER() OVER (PARTITION BY pr.product_id ORDER BY pr.captured_date DESC) AS rn
         FROM prices pr JOIN products p ON p.id = pr.product_id
         WHERE p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
           AND pr.captured_date >= (CURRENT_DATE - INTERVAL '21 days')
       ),
       piv AS (
-        SELECT target_id, name, brand, gender,
+        SELECT target_id, name, brand, gender, product_type,
                max(price) FILTER (WHERE rn = 1) AS to_p,
                max(price) FILTER (WHERE rn = 2) AS from_p
-        FROM ranked WHERE rn <= 2 GROUP BY product_id, target_id, name, brand, gender
+        FROM ranked WHERE rn <= 2 GROUP BY product_id, target_id, name, brand, gender, product_type
       ),
       m AS (
-        SELECT target_id, name, brand, gender, from_p, to_p,
+        SELECT target_id, name, brand, gender, product_type, from_p, to_p,
                ROW_NUMBER() OVER (PARTITION BY target_id ORDER BY abs(to_p - from_p)/NULLIF(from_p,0) DESC) AS rn
         FROM piv WHERE from_p IS NOT NULL AND from_p > 0 AND abs(to_p - from_p)/from_p > 0.05
       )
-      SELECT target_id, name, brand, gender, from_p AS from_price, to_p AS to_price
+      SELECT target_id, name, brand, gender, product_type, from_p AS from_price, to_p AS to_price
       FROM m WHERE rn <= 60 ORDER BY target_id`),
     pool.query<StockRow>(`
       WITH ranked AS (
-        SELECT inv.product_id, p.target_id, p.name, p.gender, inv.stock_status,
+        SELECT inv.product_id, p.target_id, p.name, p.gender, p.product_type, inv.stock_status,
                ROW_NUMBER() OVER (PARTITION BY inv.product_id ORDER BY inv.captured_date DESC) AS rn
         FROM inventory_snapshots inv JOIN products p ON p.id = inv.product_id
         WHERE p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
           AND inv.captured_date >= (CURRENT_DATE - INTERVAL '21 days')
       ),
       piv AS (
-        SELECT target_id, name, gender,
+        SELECT target_id, name, gender, product_type,
                max(stock_status::text) FILTER (WHERE rn = 1) AS now_s,
                max(stock_status::text) FILTER (WHERE rn = 2) AS prior_s
-        FROM ranked WHERE rn <= 2 GROUP BY product_id, target_id, name, gender
+        FROM ranked WHERE rn <= 2 GROUP BY product_id, target_id, name, gender, product_type
       )
-      SELECT target_id, name, gender FROM (
-        SELECT target_id, name, gender,
+      SELECT target_id, name, gender, product_type FROM (
+        SELECT target_id, name, gender, product_type,
                ROW_NUMBER() OVER (PARTITION BY target_id ORDER BY name) AS rk
         FROM piv WHERE now_s = 'out_of_stock' AND prior_s = 'in_stock'
       ) z WHERE rk <= 60 ORDER BY target_id`),
@@ -171,6 +174,7 @@ async function gather(): Promise<unknown> {
     brand: r.brand,
     category: r.category,
     gender: r.gender,
+    productType: r.product_type,
     reg: r.reg,
     sale: r.sale,
     pct: r.pct,
@@ -181,6 +185,7 @@ async function gather(): Promise<unknown> {
     name: r.name,
     brand: r.brand,
     gender: r.gender,
+    productType: r.product_type,
     from: r.from_price,
     to: r.to_price,
   }));
@@ -188,6 +193,7 @@ async function gather(): Promise<unknown> {
     competitor: r.target_id,
     name: r.name,
     gender: r.gender,
+    productType: r.product_type,
   }));
 
   const adList = ads.rows.map((r) => ({
@@ -373,14 +379,16 @@ const DASH_JS = String.raw`
     var fbar='<div class="filters">'+vendorSel()+genderSel()
       +'<select id="f-brand"><option value="">All brands ('+brandList.length+')</option>'
       +brandList.map(function(b){ return '<option>'+esc(b)+'</option>'; }).join('')+'</select>'
-      +'<select id="f-group"><option value="">All categories</option><option>Watches</option>'
-      +'<option>Jewelry</option><option>Accessories</option><option>Other</option></select></div>';
+      +'<select id="f-group"><option value="">All types</option>'
+      +'<option value="watches">Watches</option><option value="jewelry">Jewelry</option>'
+      +'<option value="accessories">Accessories</option><option value="eyewear">Eyewear</option>'
+      +'<option value="other">Other</option></select></div>';
     var panel=document.getElementById('panel-discounts');
     panel.innerHTML=mini+fbar+'<div class="h3" id="disc-count"></div><div id="disc-items"></div>';
     wireGlobals(panel);
     function drawItems(){
       var fb=document.getElementById('f-brand').value, fg=document.getElementById('f-group').value;
-      var list=items.filter(function(d){ return (!fb||d.brand===fb) && (!fg||groupOf(d.category,d.name)===fg); });
+      var list=items.filter(function(d){ return (!fb||d.brand===fb) && (!fg||d.productType===fg); });
       document.getElementById('disc-count').textContent='On-sale items ('+list.length+')';
       var rows=list.slice(0,400).map(function(d){
         return '<tr><td class="l nm">'+esc(d.name)+'</td><td class="l">'+esc(d.brand||'—')+'</td><td class="l">'+esc(d.category||'—')+'</td>'
@@ -393,15 +401,6 @@ const DASH_JS = String.raw`
     document.getElementById('f-brand').onchange=drawItems;
     document.getElementById('f-group').onchange=drawItems;
     drawItems();
-  }
-
-  // High-level category classifier — raw categories are granular & Macedonian.
-  function groupOf(cat,name){
-    var s=((cat||'')+' '+(name||'')).toLowerCase();
-    if(/часовник|\bwatch/.test(s)) return 'Watches';
-    if(/накит|прстен|обетк|ѓердан|белегз|приврзок|синџир|алк[аи]|jewel|ring|necklace|bracelet|earring|pendant|chain/.test(s)) return 'Jewelry';
-    if(/ремен|ремч|каиш|strap|band|додаток|додатоци|accessor|кутиј|пишување|пенкало/.test(s)) return 'Accessories';
-    return 'Other';
   }
 
   function renderAds(){

@@ -1,9 +1,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { parseProduct } from "../../src/sources/web-jsonld.js";
+import { parseOg, parseProduct } from "../../src/sources/web-jsonld.js";
 
 const fx = (f: string) =>
   readFileSync(new URL(`../validation/fixtures/saat-saat/${f}`, import.meta.url), "utf8");
+
+const fxOg = (f: string) =>
+  readFileSync(new URL(`./fixtures/web-jsonld/${f}`, import.meta.url), "utf8");
 
 describe("web-jsonld parseProduct discount capture", () => {
   it("captures the struck original + sale price on a discounted product", () => {
@@ -24,5 +27,20 @@ describe("web-jsonld parseProduct discount capture", () => {
     expect(o?.price).toBeCloseTo(11290, 0);
     expect(o?.salePrice ?? null).toBeNull();
     expect(o?.discountPct ?? null).toBeNull();
+  });
+});
+
+describe("parseOg swarovski default", () => {
+  it("applies womens + jewelry default when opts say so", () => {
+    const o = parseOg(fxOg("swarovski-og.html"), "https://royalhouse.mk/p/2141/hyperbola-choker", {
+      genderDefault: "womens",
+      typeDefault: "jewelry",
+    });
+    expect(o?.gender).toBe("womens");
+    expect(o?.productType).toBe("jewelry");
+  });
+  it("does NOT default gender when no opts (other OG sites)", () => {
+    const o = parseOg(fxOg("swarovski-og.html"), "https://royalhouse.mk/p/2141/hyperbola-choker");
+    expect(o?.gender ?? null).toBeNull();
   });
 });
