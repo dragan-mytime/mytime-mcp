@@ -3,10 +3,16 @@
 // already in the DB — no re-scrape. Idempotent. Run from repo root on the VPS:
 //   node db/scripts/backfill-taxonomy.mjs            # dry run (counts only)
 //   node db/scripts/backfill-taxonomy.mjs --apply    # write
+// Note: Hronometar gets product_type "watches" here; its gender (and Bozinovski's)
+// is intentionally left for the next ingest, where the patched collectors read it.
 import pg from "pg";
 import { normalizeGender, normalizeType } from "../../ingestion/dist/pipeline/normalize.js";
 
 const APPLY = process.argv.includes("--apply");
+if (!process.env.DATABASE_URL) {
+  console.error("ERROR: DATABASE_URL is not set");
+  process.exit(1);
+}
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_SSL_NO_VERIFY === "true" ? { rejectUnauthorized: false } : undefined,
