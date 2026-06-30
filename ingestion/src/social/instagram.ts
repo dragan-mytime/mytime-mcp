@@ -73,7 +73,8 @@ export function mapIgPosts(p: {
     const likes = post.likesCount ?? null;
     const comments = post.commentsCount ?? null;
     const views = post.videoViewCount ?? null;
-    const engagement = (likes ?? 0) + (comments ?? 0);
+    // null only when no interaction data at all (IG can hide like counts publicly).
+    const engagement = likes === null && comments === null ? null : (likes ?? 0) + (comments ?? 0);
     const { reach, source } = estimateReach("instagram", views, followers);
     return [
       {
