@@ -233,6 +233,36 @@ export const socialMetrics = pgTable(
   ],
 );
 
+export const socialPosts = pgTable(
+  "social_posts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    socialAccountId: uuid("social_account_id")
+      .notNull()
+      .references(() => socialAccounts.id, { onDelete: "cascade" }),
+    externalPostId: text("external_post_id").notNull(),
+    capturedDate: date("captured_date").notNull(),
+    postedAt: timestamp("posted_at", { withTimezone: true }),
+    postType: text("post_type"), // image | video | carousel | reel
+    caption: text("caption"),
+    permalink: text("permalink"),
+    mediaUrl: text("media_url"),
+    mediaUrls: jsonb("media_urls"), // string[]
+    likes: integer("likes"),
+    comments: integer("comments"),
+    shares: integer("shares"),
+    views: integer("views"),
+    engagement: integer("engagement"),
+    estimatedReach: integer("estimated_reach"),
+    reachSource: text("reach_source"), // views | estimate | measured
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("social_posts_account_external_uq").on(t.socialAccountId, t.externalPostId),
+    index("social_posts_account_posted_idx").on(t.socialAccountId, t.postedAt),
+  ],
+);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Ad intelligence: ad_observations (Facebook/Instagram Ad Library per-target)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -416,11 +446,19 @@ export const pricesRelations = relations(prices, ({ one }) => ({
 export const socialAccountsRelations = relations(socialAccounts, ({ one, many }) => ({
   target: one(targets, { fields: [socialAccounts.targetId], references: [targets.id] }),
   metrics: many(socialMetrics),
+  posts: many(socialPosts),
 }));
 
 export const socialMetricsRelations = relations(socialMetrics, ({ one }) => ({
   account: one(socialAccounts, {
     fields: [socialMetrics.socialAccountId],
+    references: [socialAccounts.id],
+  }),
+}));
+
+export const socialPostsRelations = relations(socialPosts, ({ one }) => ({
+  account: one(socialAccounts, {
+    fields: [socialPosts.socialAccountId],
     references: [socialAccounts.id],
   }),
 }));
@@ -450,3 +488,4 @@ export type DigestPromptRow = typeof digestPrompts.$inferSelect;
 export type NewDigestPromptRow = typeof digestPrompts.$inferInsert;
 export type DigestScheduleRow = typeof digestSchedules.$inferSelect;
 export type NewDigestScheduleRow = typeof digestSchedules.$inferInsert;
+export type SocialPostRow = typeof socialPosts.$inferSelect;

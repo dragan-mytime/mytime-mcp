@@ -43,6 +43,13 @@
       "when": 1782847490257,
       "tag": "0005_large_thena",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1782859173200,
+      "tag": "0006_strange_hobgoblin",
+      "breakpoints": true
     }
   ]
 }
