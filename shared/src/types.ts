@@ -15,3 +15,21 @@ export interface SocialMetricValue {
   metric: string; // e.g. "followers" | "following" | "posts" | "avg_post_engagement"
   value: number;
 }
+
+/** One public social post observed for an account. */
+export interface SocialPostObservation {
+  externalPostId: string;
+  postedAt: string | null; // ISO timestamp
+  postType: string | null; // image | video | carousel | reel
+  caption: string | null;
+  permalink: string | null;
+  mediaUrl: string | null;
+  mediaUrls: string[] | null;
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+  views: number | null;
+  engagement: number | null;
+  estimatedReach: number | null;
+  reachSource: string | null; // views | estimate | measured
+}
