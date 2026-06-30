@@ -127,7 +127,9 @@ export async function geminiNarrate(
         // the HTML email room (a full digest runs ~25k chars ≈ 8k tokens).
         generationConfig: { maxOutputTokens: 8192, thinkingConfig: { thinkingBudget: 0 } },
       }),
-      signal: AbortSignal.timeout(30_000),
+      // A full bilingual digest is ~8k output tokens, which can take 40-60s to
+      // generate; 30s was too short and forced the template fallback.
+      signal: AbortSignal.timeout(90_000),
     });
     if (!res.ok) return null;
     const json = (await res.json()) as {
