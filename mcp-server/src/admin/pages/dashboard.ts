@@ -47,13 +47,29 @@ interface AdRow {
   link_url: string | null;
   snapshot_url: string | null;
 }
+interface SocialRow {
+  target_id: string;
+  platform: string;
+  caption: string | null;
+  permalink: string | null;
+  media_url: string | null;
+  post_type: string | null;
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+  views: number | null;
+  engagement: number | null;
+  estimated_reach: number | null;
+  reach_source: string | null;
+  posted_at: string | null;
+}
 
 /** Gather everything the dashboard needs: the digest block + fuller drill-down lists. */
 async function gather(): Promise<unknown> {
   const db = adminWriteDb();
   const pool = adminWritePool();
 
-  const [digest, names, counts, disc, ads, moves, stock] = await Promise.all([
+  const [digest, names, counts, disc, ads, moves, stock, social] = await Promise.all([
     dailyDigest(db),
     pool.query<NameRow>("SELECT id, name FROM targets WHERE is_self = false"),
     pool.query<CountRow>(`
@@ -134,6 +150,20 @@ async function gather(): Promise<unknown> {
                ROW_NUMBER() OVER (PARTITION BY target_id ORDER BY name) AS rk
         FROM piv WHERE now_s = 'out_of_stock' AND prior_s = 'in_stock'
       ) z WHERE rk <= 60 ORDER BY target_id`),
+    pool.query<SocialRow>(`
+      WITH ranked AS (
+        SELECT t.id AS target_id, sa.platform, sp.caption, sp.permalink, sp.media_url, sp.post_type,
+               sp.likes, sp.comments, sp.shares, sp.views, sp.engagement, sp.estimated_reach,
+               sp.reach_source, sp.posted_at,
+               row_number() OVER (PARTITION BY t.id ORDER BY sp.engagement DESC NULLS LAST) AS rn
+        FROM social_posts sp
+        JOIN social_accounts sa ON sa.id = sp.social_account_id
+        JOIN targets t ON t.id = sa.target_id
+        WHERE t.is_self = false AND sp.posted_at >= now() - interval '30 days'
+      )
+      SELECT target_id, platform, caption, permalink, media_url, post_type, likes, comments, shares,
+             views, engagement, estimated_reach, reach_source, posted_at
+      FROM ranked WHERE rn <= 12 ORDER BY target_id, engagement DESC NULLS LAST`),
   ]);
 
   const nameOf = new Map(names.rows.map((r) => [r.id, r.name]));
@@ -207,6 +237,22 @@ async function gather(): Promise<unknown> {
     isNew: r.snapshot_url != null && (newSnaps.get(r.target_id)?.has(r.snapshot_url) ?? false),
     isBest: r.snapshot_url != null && bestSnap.get(r.target_id) === r.snapshot_url,
   }));
+  const socialList = social.rows.map((r) => ({
+    competitor: r.target_id,
+    platform: r.platform,
+    caption: r.caption,
+    permalink: r.permalink,
+    mediaUrl: r.media_url,
+    type: r.post_type,
+    likes: r.likes,
+    comments: r.comments,
+    shares: r.shares,
+    views: r.views,
+    engagement: r.engagement,
+    estimatedReach: r.estimated_reach,
+    reachSource: r.reach_source,
+    postedAt: r.posted_at,
+  }));
 
   const totals = {
     onSale: competitors.reduce((a, c) => a + c.onSale, 0),
@@ -221,6 +267,7 @@ async function gather(): Promise<unknown> {
     competitors,
     discounts,
     ads: adList,
+    social: socialList,
     priceMoves,
     stockouts,
   };
@@ -245,12 +292,14 @@ export async function render(_req: Request): Promise<string> {
       <button class="dtab" data-tab="discounts">Discounts</button>
       <button class="dtab" data-tab="ads">Ads</button>
       <button class="dtab" data-tab="pricing">Pricing &amp; inventory</button>
+      <button class="dtab" data-tab="social">Social</button>
       <span id="filter-chip" class="chip" style="display:none;"></span>
     </div>
     <div id="panel-overview" class="panel"></div>
     <div id="panel-discounts" class="panel" hidden></div>
     <div id="panel-ads" class="panel" hidden></div>
     <div id="panel-pricing" class="panel" hidden></div>
+    <div id="panel-social" class="panel" hidden></div>
   </div>
   <script type="application/json" id="dash-data">${json}</script>
   <script>${DASH_JS}</script>`;
@@ -432,6 +481,33 @@ const DASH_JS = String.raw`
     document.getElementById('ad-new').onchange=draw; document.getElementById('ad-best').onchange=draw; draw();
   }
 
+  function renderSocial(){
+    var el=document.getElementById('panel-social');
+    var posts=D.social.filter(function(p){ return !state.comp || p.competitor===state.comp; });
+    var ctrl='<div class="filters">'+vendorSel()+'</div>';
+    var groups={}; posts.forEach(function(p){ (groups[p.competitor]=groups[p.competitor]||[]).push(p); });
+    var keys=Object.keys(groups);
+    var body=keys.length ? keys.map(function(cid){
+      var list=groups[cid];
+      var cards=list.map(function(p){
+        var thumb=p.mediaUrl
+          ? '<img class="adthumb" src="'+esc(p.mediaUrl)+'" loading="lazy" onerror="this.className=\'adthumb ph\';this.removeAttribute(\'src\');this.textContent=\'media expired\';">'
+          : '<div class="adthumb ph">no media</div>';
+        var cap=p.caption ? (p.caption.length>90 ? p.caption.slice(0,90)+'…' : p.caption) : '(no caption)';
+        var stats='❤ '+fmt(p.likes)+' · 💬 '+fmt(p.comments)+(p.views!=null?' · ▶ '+fmt(p.views):'');
+        var reach=p.estimatedReach!=null ? '<span class="badge-off">reach ~'+fmt(p.estimatedReach)+' ('+esc(p.reachSource||'?')+')</span>' : '';
+        var link=p.permalink ? ' <a href="'+esc(p.permalink)+'" target="_blank" rel="noopener">open ↗</a>' : '';
+        return '<div class="adcard">'+thumb+'<div class="adbody"><div class="adtitle">'+esc(p.platform)+' · eng '+fmt(p.engagement)+'</div>'
+          +'<div class="admeta">'+esc(cap)+'</div>'
+          +'<div class="admeta">'+stats+'</div>'
+          +'<div class="admeta">'+reach+link+'</div></div></div>';
+      }).join('');
+      return '<div class="h3" style="margin-top:1rem;">'+esc(nameOf[cid]||cid)+' <span class="secnote">('+list.length+' posts)</span></div><div class="adgrid">'+cards+'</div>';
+    }).join('') : '<p class="secnote">No social posts collected yet.</p>';
+    el.innerHTML=ctrl+body;
+    wireGlobals(el);
+  }
+
   function renderPricing(){
     function f(arr){ return arr.filter(function(x){ return (!state.comp||x.competitor===state.comp) && gmatch(x.gender,state.gender); }); }
     var moves=f(D.priceMoves), stock=f(D.stockouts);
@@ -452,9 +528,9 @@ const DASH_JS = String.raw`
 
   function show(tab){
     state.tab=tab;
-    ['overview','discounts','ads','pricing'].forEach(function(t){ document.getElementById('panel-'+t).hidden = (t!==tab); });
+    ['overview','discounts','ads','pricing','social'].forEach(function(t){ document.getElementById('panel-'+t).hidden = (t!==tab); });
     document.querySelectorAll('.dtab').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-tab')===tab); });
-    if(tab==='overview')renderOverview(); else if(tab==='discounts')renderDiscounts(); else if(tab==='ads')renderAds(); else renderPricing();
+    if(tab==='overview')renderOverview(); else if(tab==='discounts')renderDiscounts(); else if(tab==='ads')renderAds(); else if(tab==='pricing')renderPricing(); else renderSocial();
   }
   function setComp(id){ state.comp=id; var chip=document.getElementById('filter-chip');
     if(id){ chip.style.display='inline-block'; chip.innerHTML='Filter: '+esc(nameOf[id]||id)+' ✕'; } else { chip.style.display='none'; } }

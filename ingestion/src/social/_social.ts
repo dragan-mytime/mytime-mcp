@@ -1,4 +1,9 @@
-import { requireEnv, type SocialMetricValue, type SocialPlatform } from "@mytime/shared";
+import {
+  requireEnv,
+  type SocialMetricValue,
+  type SocialPlatform,
+  type SocialPostObservation,
+} from "@mytime/shared";
 
 /** A competitor social account to collect public metrics for. */
 export interface SocialAccountRef {
@@ -12,6 +17,7 @@ export interface SocialAccountRef {
 export interface SocialResult {
   targetId: string;
   metrics: SocialMetricValue[];
+  posts?: SocialPostObservation[];
 }
 
 /**

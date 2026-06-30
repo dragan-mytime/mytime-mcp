@@ -3,6 +3,7 @@ import type {
   ProductObservation,
   SocialMetricValue,
   SocialPlatform,
+  SocialPostObservation,
   Target,
 } from "@mytime/shared";
 import { and, eq, sql } from "drizzle-orm";
@@ -16,6 +17,7 @@ import {
   products,
   socialAccounts,
   socialMetrics,
+  socialPosts,
   targets,
 } from "./schema.js";
 
@@ -251,6 +253,63 @@ export async function writeSocialMetrics(
       set: { value: sql`excluded.value`, source: sql`excluded.source` },
     });
   return metrics.length;
+}
+
+/** Idempotently upsert social posts (account × external post id). Returns count written. */
+export async function writeSocialPosts(
+  db: Db,
+  socialAccountId: string,
+  runDate: string,
+  posts: SocialPostObservation[],
+): Promise<number> {
+  if (posts.length === 0) return 0;
+  // Dedupe within a run (last wins) so ON CONFLICT can't hit a row twice in one statement.
+  const byId = new Map<string, SocialPostObservation>();
+  for (const p of posts) byId.set(p.externalPostId, p);
+  const deduped = [...byId.values()];
+  const values = deduped.map((p) => ({
+    socialAccountId,
+    externalPostId: p.externalPostId,
+    capturedDate: runDate,
+    postedAt: p.postedAt ? new Date(p.postedAt) : null,
+    postType: p.postType ?? null,
+    caption: p.caption ?? null,
+    permalink: p.permalink ?? null,
+    mediaUrl: p.mediaUrl ?? null,
+    mediaUrls: p.mediaUrls ?? null,
+    likes: p.likes ?? null,
+    comments: p.comments ?? null,
+    shares: p.shares ?? null,
+    views: p.views ?? null,
+    engagement: p.engagement ?? null,
+    estimatedReach: p.estimatedReach ?? null,
+    reachSource: p.reachSource ?? null,
+  }));
+  for (const c of chunk(values, CHUNK)) {
+    await db
+      .insert(socialPosts)
+      .values(c)
+      .onConflictDoUpdate({
+        target: [socialPosts.socialAccountId, socialPosts.externalPostId],
+        set: {
+          capturedDate: sql`excluded.captured_date`,
+          postedAt: sql`excluded.posted_at`,
+          postType: sql`excluded.post_type`,
+          caption: sql`excluded.caption`,
+          permalink: sql`excluded.permalink`,
+          mediaUrl: sql`excluded.media_url`,
+          mediaUrls: sql`excluded.media_urls`,
+          likes: sql`excluded.likes`,
+          comments: sql`excluded.comments`,
+          shares: sql`excluded.shares`,
+          views: sql`excluded.views`,
+          engagement: sql`excluded.engagement`,
+          estimatedReach: sql`excluded.estimated_reach`,
+          reachSource: sql`excluded.reach_source`,
+        },
+      });
+  }
+  return deduped.length;
 }
 
 /** Idempotently upsert ad observations (target × adArchiveId × date). Returns count written. */

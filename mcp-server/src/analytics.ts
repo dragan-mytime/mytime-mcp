@@ -285,6 +285,108 @@ export async function competitorAds(pool: Pool, args: { competitor?: string; day
   };
 }
 
+interface SocialPostQueryRow {
+  competitor: string;
+  platform: string;
+  caption: string | null;
+  permalink: string | null;
+  media_url: string | null;
+  post_type: string | null;
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+  views: number | null;
+  engagement: number | null;
+  estimated_reach: number | null;
+  reach_source: string | null;
+  posted_at: string | null;
+  rn: string;
+  posts_in_window: string;
+  avg_engagement: string | null;
+  avg_reach: string | null;
+}
+
+/**
+ * Recent social posts per competitor with engagement + estimated reach (labeled by
+ * source). Returns posting cadence, averages, and the top posts by engagement.
+ */
+export async function socialPosts(
+  pool: Pool,
+  opts: { competitor?: string; platform?: string; days?: number; limit?: number },
+) {
+  const days = opts.days ?? 30;
+  const limit = Math.min(opts.limit ?? 20, 50);
+  const params: unknown[] = [days];
+  const conds = ["sp.posted_at >= now() - ($1 || ' days')::interval", "t.is_self = false"];
+  if (opts.competitor) {
+    params.push(opts.competitor);
+    conds.push(`t.id = $${params.length}`);
+  }
+  if (opts.platform) {
+    params.push(opts.platform);
+    conds.push(`sa.platform = $${params.length}::social_platform`);
+  }
+  const { rows } = await pool.query<SocialPostQueryRow>(
+    `WITH ranked AS (
+       SELECT t.id AS competitor, sa.platform, sp.caption, sp.permalink, sp.media_url,
+              sp.post_type, sp.likes, sp.comments, sp.shares, sp.views, sp.engagement,
+              sp.estimated_reach, sp.reach_source, sp.posted_at,
+              row_number() OVER (PARTITION BY t.id ORDER BY sp.engagement DESC NULLS LAST) AS rn,
+              count(*) OVER (PARTITION BY t.id) AS posts_in_window,
+              round(avg(sp.engagement) OVER (PARTITION BY t.id)) AS avg_engagement,
+              round(avg(sp.estimated_reach) OVER (PARTITION BY t.id)) AS avg_reach
+       FROM social_posts sp
+       JOIN social_accounts sa ON sa.id = sp.social_account_id
+       JOIN targets t ON t.id = sa.target_id
+       WHERE ${conds.join(" AND ")}
+     )
+     SELECT * FROM ranked WHERE rn <= ${limit} ORDER BY competitor, engagement DESC NULLS LAST`,
+    params,
+  );
+
+  const byComp = new Map<
+    string,
+    {
+      competitor: string;
+      postsInWindow: number;
+      avgEngagement: number | null;
+      avgReach: number | null;
+      posts: unknown[];
+    }
+  >();
+  for (const r of rows) {
+    const g = byComp.get(r.competitor) ?? {
+      competitor: r.competitor,
+      postsInWindow: Number(r.posts_in_window),
+      avgEngagement: r.avg_engagement === null ? null : Number(r.avg_engagement),
+      avgReach: r.avg_reach === null ? null : Number(r.avg_reach),
+      posts: [],
+    };
+    g.posts.push({
+      platform: r.platform,
+      type: r.post_type,
+      caption: r.caption,
+      permalink: r.permalink,
+      mediaUrl: r.media_url,
+      likes: r.likes,
+      comments: r.comments,
+      shares: r.shares,
+      views: r.views,
+      engagement: r.engagement,
+      estimatedReach: r.estimated_reach,
+      reachSource: r.reach_source,
+      postedAt: r.posted_at,
+    });
+    byComp.set(r.competitor, g);
+  }
+  return {
+    windowDays: days,
+    reachNote:
+      "Reach is 'views' (measured), 'estimate' (followers×benchmark), or 'measured' (own-brand insights).",
+    results: [...byComp.values()],
+  };
+}
+
 /** price_assortment — price ranges and assortment, by competitor/brand. */
 export async function priceAssortment(pool: Pool, opts: { competitor?: string; brand?: string }) {
   const params: unknown[] = [];

@@ -7,6 +7,7 @@ import {
   inventoryVelocity,
   priceAssortment,
   socialBenchmark,
+  socialPosts,
 } from "../analytics.js";
 import { listAuthorizedUsers } from "../auth/authorized-users.js";
 import { readDb } from "../db.js";
@@ -92,6 +93,39 @@ export const tools: McpToolDef[] = [
       metric: z.string().optional().describe("metric name (default 'followers')"),
     },
     run: (pool, a) => socialBenchmark(pool, a as { platform?: string; metric?: string }),
+  },
+  {
+    name: "social_posts",
+    title: "Social posts & engagement (per competitor)",
+    description:
+      "Recent posts per competitor with caption, media, engagement (likes/comments/shares/views) and estimated reach (labeled by source: views/estimate/measured). Includes posting cadence + top posts by engagement.",
+    requiredRole: "analyst",
+    inputSchema: {
+      competitor: z.string().optional().describe("target id, e.g. 'b-watch'; omit for all"),
+      platform: z
+        .enum(["instagram", "facebook", "tiktok"])
+        .optional()
+        .describe("filter to one platform"),
+      days: z
+        .number()
+        .int()
+        .positive()
+        .max(365)
+        .optional()
+        .describe("lookback window (default 30)"),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .max(50)
+        .optional()
+        .describe("top posts per competitor (default 20)"),
+    },
+    run: (pool, a) =>
+      socialPosts(
+        pool,
+        a as { competitor?: string; platform?: string; days?: number; limit?: number },
+      ),
   },
   {
     name: "price_assortment",
