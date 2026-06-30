@@ -6,6 +6,12 @@ const BROWSER_UA =
 const CHALLENGE_RE =
   /just a moment|attention required|checking your browser|verifying you are human/i;
 
+/** True when a 200 body is actually a Cloudflare interstitial (not real content). */
+function isChallengePage(body: string): boolean {
+  const head = body.slice(0, 4000);
+  return CHALLENGE_RE.test(head) || /cdn-cgi\/challenge-platform|cf-mitigated|_cf_chl/i.test(head);
+}
+
 export interface CloudflareSession {
   /** Navigate to `url` and return the response body (JSON for Store-API endpoints). */
   fetchText(url: string): Promise<string>;
@@ -67,8 +73,9 @@ export async function openCloudflareSession(origin: string): Promise<CloudflareS
         const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
         if (resp?.status() === 200) {
           const body = await resp.text();
-          // A real API response is JSON/text; an HTML doc here means a challenge page.
-          if (!/^\s*<(?:!doctype|html)/i.test(body)) return body;
+          // Return real content — JSON (Store API) or HTML (Magento listing) alike; reject
+          // only an actual Cloudflare challenge page (don't assume "HTML == challenge").
+          if (!isChallengePage(body)) return body;
         }
         lastErr = `status ${resp?.status() ?? "none"}`;
       } catch (err) {
