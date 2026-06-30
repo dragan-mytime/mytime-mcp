@@ -14,18 +14,21 @@ export interface CloudflareSession {
 }
 
 /**
- * Open a headless-Chromium session that has passed the Cloudflare JS challenge for `origin`.
+ * Open a Chromium session that has passed the Cloudflare JS challenge for `origin`.
  *
  * Some sites (watch-club) sit behind Cloudflare's managed challenge: plain fetch — and even an
- * in-page `fetch()` to the Store REST API — gets a "Just a moment…" 403. But a real browser
- * solves the challenge once on the homepage, and thereafter a *top-level navigation* to an API
- * URL returns clean JSON (the cf_clearance cookie rides along). We drive that here.
+ * in-page `fetch()` to the Store REST API — gets a "Just a moment…" 403. A real browser solves
+ * the challenge by navigating, and a *top-level navigation* to an API URL then returns clean
+ * JSON (cf_clearance rides along).
  *
- * Calls are serialized (a single page/tab) so concurrent callers queue safely.
+ * The browser must be **headful** — Cloudflare detects headless Chromium and serves an
+ * unsolvable challenge for the deeper pages (only the homepage + edge-cached API page 1 get
+ * through headless). On a server this means running under a virtual display: the ingestion
+ * process is launched via `xvfb-run` (see deploy/cron). Calls are serialized (single tab).
  */
 export async function openCloudflareSession(origin: string): Promise<CloudflareSession> {
   const browser: Browser = await chromium.launch({
-    headless: true,
+    headless: false,
     args: [
       "--no-sandbox",
       "--disable-blink-features=AutomationControlled",
