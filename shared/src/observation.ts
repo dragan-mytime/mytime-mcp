@@ -15,6 +15,7 @@ export interface ProductObservation {
   brand?: string | null;
   modelRef?: string | null; // manufacturer reference — cross-competitor match key
   category?: string | null;
+  productType?: string | null; // watches | jewelry | accessories | eyewear | other | null
   gender?: string | null; // normalized: mens | womens | unisex | kids | null
   collection?: string | null;
   attributes?: Record<string, unknown> | null;
