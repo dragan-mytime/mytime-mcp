@@ -263,7 +263,11 @@ export async function writeSocialPosts(
   posts: SocialPostObservation[],
 ): Promise<number> {
   if (posts.length === 0) return 0;
-  const values = posts.map((p) => ({
+  // Dedupe within a run (last wins) so ON CONFLICT can't hit a row twice in one statement.
+  const byId = new Map<string, SocialPostObservation>();
+  for (const p of posts) byId.set(p.externalPostId, p);
+  const deduped = [...byId.values()];
+  const values = deduped.map((p) => ({
     socialAccountId,
     externalPostId: p.externalPostId,
     capturedDate: runDate,
@@ -305,7 +309,7 @@ export async function writeSocialPosts(
         },
       });
   }
-  return posts.length;
+  return deduped.length;
 }
 
 /** Idempotently upsert ad observations (target × adArchiveId × date). Returns count written. */
