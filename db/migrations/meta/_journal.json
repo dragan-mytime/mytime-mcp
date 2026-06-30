@@ -29,6 +29,13 @@
       "when": 1782769670160,
       "tag": "0003_slow_captain_midlands",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1782831759449,
+      "tag": "0004_fluffy_killmonger",
+      "breakpoints": true
     }
   ]
 }

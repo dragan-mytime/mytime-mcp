@@ -60,10 +60,10 @@ export const targets = pgTable("targets", {
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  platform: text("platform"),            // web.platform e.g. "woocommerce"
-  social: jsonb("social"),               // { instagram?, facebook?, tiktok? }
-  registry: jsonb("registry"),           // { central_registry_id }
-  webLocations: jsonb("web_locations"),  // web.locations array
+  platform: text("platform"), // web.platform e.g. "woocommerce"
+  social: jsonb("social"), // { instagram?, facebook?, tiktok? }
+  registry: jsonb("registry"), // { central_registry_id }
+  webLocations: jsonb("web_locations"), // web.locations array
 });
 
 /**
@@ -102,6 +102,7 @@ export const products = pgTable(
     brand: text("brand"), // null for monobrand / unknown
     modelRef: text("model_ref"), // manufacturer reference, e.g. "PXW453-04" — cross-competitor match key
     category: text("category"),
+    productType: text("product_type"), // watches | jewelry | accessories | eyewear | other | null
     gender: text("gender"), // normalized in ingestion: mens | womens | unisex | kids | null
     collection: text("collection"),
     url: text("url"),
@@ -119,6 +120,7 @@ export const products = pgTable(
     uniqueIndex("products_target_external_uq").on(t.targetId, t.externalId),
     index("products_target_idx").on(t.targetId),
     index("products_model_ref_idx").on(t.modelRef), // cross-competitor head-to-head matching
+    index("products_product_type_idx").on(t.productType),
   ],
 );
 
