@@ -17,9 +17,23 @@ interface DiscRow {
   name: string;
   brand: string | null;
   category: string | null;
+  gender: string | null;
   reg: number | null;
   sale: number | null;
   pct: number | null;
+}
+interface MoveRow {
+  target_id: string;
+  name: string;
+  brand: string | null;
+  gender: string | null;
+  from_price: number | null;
+  to_price: number | null;
+}
+interface StockRow {
+  target_id: string;
+  name: string;
+  gender: string | null;
 }
 interface AdRow {
   target_id: string;
@@ -36,7 +50,7 @@ async function gather(): Promise<unknown> {
   const db = adminWriteDb();
   const pool = adminWritePool();
 
-  const [digest, names, counts, disc, ads] = await Promise.all([
+  const [digest, names, counts, disc, ads, moves, stock] = await Promise.all([
     dailyDigest(db),
     pool.query<NameRow>("SELECT id, name FROM targets WHERE is_self = false"),
     pool.query<CountRow>(`
@@ -52,7 +66,7 @@ async function gather(): Promise<unknown> {
         GROUP BY p.target_id
       ),
       onsale AS (
-        SELECT p.target_id, p.name, p.brand, p.category,
+        SELECT p.target_id, p.name, p.brand, p.category, p.gender,
                pr.price::float8 AS reg, pr.sale_price::float8 AS sale, pr.discount_pct::float8 AS pct,
                ROW_NUMBER() OVER (PARTITION BY p.target_id ORDER BY pr.discount_pct DESC NULLS LAST) AS rn
         FROM prices pr
@@ -60,7 +74,7 @@ async function gather(): Promise<unknown> {
         JOIN latest l ON l.target_id = p.target_id AND pr.captured_date = l.d
         WHERE pr.discount_pct > 0
       )
-      SELECT target_id, name, brand, category, reg, sale, pct FROM onsale WHERE rn <= 100
+      SELECT target_id, name, brand, category, gender, reg, sale, pct FROM onsale WHERE rn <= 100
       ORDER BY target_id, pct DESC`),
     pool.query<AdRow>(`
       WITH latest AS (
@@ -77,6 +91,46 @@ async function gather(): Promise<unknown> {
       )
       SELECT target_id, ad_title, days_running, media_url, media_type, link_url, snapshot_url
       FROM a WHERE rn <= 40 ORDER BY target_id, days_running DESC NULLS LAST`),
+    pool.query<MoveRow>(`
+      WITH ranked AS (
+        SELECT pr.product_id, p.target_id, p.name, p.brand, p.gender, pr.price::float8 AS price,
+               ROW_NUMBER() OVER (PARTITION BY pr.product_id ORDER BY pr.captured_date DESC) AS rn
+        FROM prices pr JOIN products p ON p.id = pr.product_id
+        WHERE p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
+          AND pr.captured_date >= (CURRENT_DATE - INTERVAL '21 days')
+      ),
+      piv AS (
+        SELECT target_id, name, brand, gender,
+               max(price) FILTER (WHERE rn = 1) AS to_p,
+               max(price) FILTER (WHERE rn = 2) AS from_p
+        FROM ranked WHERE rn <= 2 GROUP BY product_id, target_id, name, brand, gender
+      ),
+      m AS (
+        SELECT target_id, name, brand, gender, from_p, to_p,
+               ROW_NUMBER() OVER (PARTITION BY target_id ORDER BY abs(to_p - from_p)/NULLIF(from_p,0) DESC) AS rn
+        FROM piv WHERE from_p IS NOT NULL AND from_p > 0 AND abs(to_p - from_p)/from_p > 0.05
+      )
+      SELECT target_id, name, brand, gender, from_p AS from_price, to_p AS to_price
+      FROM m WHERE rn <= 60 ORDER BY target_id`),
+    pool.query<StockRow>(`
+      WITH ranked AS (
+        SELECT inv.product_id, p.target_id, p.name, p.gender, inv.stock_status,
+               ROW_NUMBER() OVER (PARTITION BY inv.product_id ORDER BY inv.captured_date DESC) AS rn
+        FROM inventory_snapshots inv JOIN products p ON p.id = inv.product_id
+        WHERE p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
+          AND inv.captured_date >= (CURRENT_DATE - INTERVAL '21 days')
+      ),
+      piv AS (
+        SELECT target_id, name, gender,
+               max(stock_status::text) FILTER (WHERE rn = 1) AS now_s,
+               max(stock_status::text) FILTER (WHERE rn = 2) AS prior_s
+        FROM ranked WHERE rn <= 2 GROUP BY product_id, target_id, name, gender
+      )
+      SELECT target_id, name, gender FROM (
+        SELECT target_id, name, gender,
+               ROW_NUMBER() OVER (PARTITION BY target_id ORDER BY name) AS rk
+        FROM piv WHERE now_s = 'out_of_stock' AND prior_s = 'in_stock'
+      ) z WHERE rk <= 60 ORDER BY target_id`),
   ]);
 
   const nameOf = new Map(names.rows.map((r) => [r.id, r.name]));
@@ -116,9 +170,24 @@ async function gather(): Promise<unknown> {
     name: r.name,
     brand: r.brand,
     category: r.category,
+    gender: r.gender,
     reg: r.reg,
     sale: r.sale,
     pct: r.pct,
+  }));
+
+  const priceMoves = moves.rows.map((r) => ({
+    competitor: r.target_id,
+    name: r.name,
+    brand: r.brand,
+    gender: r.gender,
+    from: r.from_price,
+    to: r.to_price,
+  }));
+  const stockouts = stock.rows.map((r) => ({
+    competitor: r.target_id,
+    name: r.name,
+    gender: r.gender,
   }));
 
   const adList = ads.rows.map((r) => ({
@@ -140,7 +209,15 @@ async function gather(): Promise<unknown> {
     deepest: Math.round(Math.max(0, ...discounts.map((d) => d.pct ?? 0))),
   };
 
-  return { date: digest.generatedFor, totals, competitors, discounts, ads: adList };
+  return {
+    date: digest.generatedFor,
+    totals,
+    competitors,
+    discounts,
+    ads: adList,
+    priceMoves,
+    stockouts,
+  };
 }
 
 // ── Page ────────────────────────────────────────────────────────────────────
@@ -224,12 +301,26 @@ const DASH_JS = String.raw`
 (function(){
   var D = JSON.parse(document.getElementById('dash-data').textContent);
   var nameOf = {}; D.competitors.forEach(function(c){ nameOf[c.id] = c.name; });
-  var state = { tab:'overview', comp:null, sort:{ key:'onSale', dir:-1 } };
+  var state = { tab:'overview', comp:null, gender:'', sort:{ key:'onSale', dir:-1 } };
 
   function fmt(n){ if(n==null) return '—'; return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g,'.'); }
   function pct(n){ return n==null ? '—' : Math.round(n)+'%'; }
   function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
   function bar(p){ if(p==null) return '—'; var w=Math.max(2,Math.round(p*0.9)); return '<span class="bartrack"><span class="bar" style="width:'+w+'px"></span></span>'+Math.round(p)+'%'; }
+
+  var GLAB={mens:'Men',womens:'Women',unisex:'Unisex',kids:'Kids'};
+  function gmatch(g,f){ if(!f) return true; if(f==='__none') return !g; return g===f; }
+  function vendorSel(){ var o='<option value="">All vendors</option>';
+    D.competitors.slice().sort(function(a,b){return a.name.localeCompare(b.name);}).forEach(function(c){
+      o+='<option value="'+c.id+'"'+(state.comp===c.id?' selected':'')+'>'+esc(c.name)+'</option>'; });
+    return '<select class="f-vendor">'+o+'</select>'; }
+  function genderSel(){ var opts=[['','All genders'],['mens','Men'],['womens','Women'],['unisex','Unisex'],['kids','Kids'],['__none','Unknown']];
+    return '<select class="f-gender">'+opts.map(function(o){ return '<option value="'+o[0]+'"'+(state.gender===o[0]?' selected':'')+'>'+o[1]+'</option>'; }).join('')+'</select>'; }
+  // Wire the global vendor/gender selects in a panel: changing either re-renders the tab.
+  function wireGlobals(el){
+    var v=el.querySelector('.f-vendor'); if(v) v.onchange=function(){ setComp(v.value||null); show(state.tab); };
+    var g=el.querySelector('.f-gender'); if(g) g.onchange=function(){ state.gender=g.value; show(state.tab); };
+  }
 
   function renderOverview(){
     var t=D.totals;
@@ -261,7 +352,7 @@ const DASH_JS = String.raw`
   }
 
   function renderDiscounts(){
-    var items=D.discounts.filter(function(d){ return !state.comp || d.competitor===state.comp; });
+    var items=D.discounts.filter(function(d){ return (!state.comp || d.competitor===state.comp) && gmatch(d.gender,state.gender); });
     var brands={}, cats={};
     D.competitors.forEach(function(c){ if(state.comp && c.id!==state.comp) return;
       (c.byBrand||[]).forEach(function(b){ var key=b.brand; if(!brands[key])brands[key]={count:0,sum:0}; brands[key].count+=b.count; brands[key].sum+=(b.avgPct||0)*b.count; });
@@ -279,13 +370,14 @@ const DASH_JS = String.raw`
     var brandList=[], seenB={};
     items.forEach(function(d){ if(d.brand && !seenB[d.brand]){ seenB[d.brand]=1; brandList.push(d.brand); } });
     brandList.sort(function(a,b){ return a.localeCompare(b); });
-    var fbar='<div class="filters">'
+    var fbar='<div class="filters">'+vendorSel()+genderSel()
       +'<select id="f-brand"><option value="">All brands ('+brandList.length+')</option>'
       +brandList.map(function(b){ return '<option>'+esc(b)+'</option>'; }).join('')+'</select>'
       +'<select id="f-group"><option value="">All categories</option><option>Watches</option>'
       +'<option>Jewelry</option><option>Accessories</option><option>Other</option></select></div>';
-    document.getElementById('panel-discounts').innerHTML=
-      mini+fbar+'<div class="h3" id="disc-count"></div><div id="disc-items"></div>';
+    var panel=document.getElementById('panel-discounts');
+    panel.innerHTML=mini+fbar+'<div class="h3" id="disc-count"></div><div id="disc-items"></div>';
+    wireGlobals(panel);
     function drawItems(){
       var fb=document.getElementById('f-brand').value, fg=document.getElementById('f-group').value;
       var list=items.filter(function(d){ return (!fb||d.brand===fb) && (!fg||groupOf(d.category,d.name)===fg); });
@@ -315,7 +407,7 @@ const DASH_JS = String.raw`
   function renderAds(){
     var el=document.getElementById('panel-ads');
     var ads=D.ads.filter(function(a){ return !state.comp || a.competitor===state.comp; });
-    var ctrl='<div class="filters">'
+    var ctrl='<div class="filters">'+vendorSel()
       +'<label style="font-size:.8rem;color:var(--muted);margin:0;"><input type="checkbox" id="ad-new"> New only</label>'
       +'<label style="font-size:.8rem;color:var(--muted);margin:0;"><input type="checkbox" id="ad-best"> Best only</label></div>';
     function draw(){
@@ -337,22 +429,26 @@ const DASH_JS = String.raw`
       document.getElementById('ad-grid').innerHTML = grid || '<p class="secnote">No ads for this filter.</p>';
     }
     el.innerHTML=ctrl+'<div id="ad-grid" class="adgrid"></div>';
+    wireGlobals(el);
     document.getElementById('ad-new').onchange=draw; document.getElementById('ad-best').onchange=draw; draw();
   }
 
   function renderPricing(){
+    function f(arr){ return arr.filter(function(x){ return (!state.comp||x.competitor===state.comp) && gmatch(x.gender,state.gender); }); }
+    var moves=f(D.priceMoves), stock=f(D.stockouts);
     var comps=D.competitors.filter(function(c){ return !state.comp || c.id===state.comp; });
-    var moves=[]; comps.forEach(function(c){ (c.priceMoves||[]).forEach(function(m){ moves.push(Object.assign({competitor:c.id},m)); }); });
-    var stock=[]; comps.forEach(function(c){ (c.stockouts||[]).forEach(function(n){ stock.push({competitor:c.id,name:n}); }); });
-    var mv='<div class="h3">Price moves (&gt;5%)</div><table class="dt"><thead><tr><th class="l">Product</th><th class="l">Competitor</th><th>From</th><th>To</th><th>Δ</th></tr></thead><tbody>'
-      +(moves.map(function(m){ var d=m.from?Math.round((m.to-m.from)/m.from*100):0;
-        return '<tr><td class="l nm">'+esc(m.name)+'</td><td class="l">'+esc(nameOf[m.competitor]||m.competitor)+'</td><td>'+fmt(m.from)+'</td><td>'+fmt(m.to)+'</td><td style="color:'+(d<0?'var(--ok-fg)':'var(--danger)')+'">'+(d>0?'+':'')+d+'%</td></tr>';
-      }).join('')||'<tr><td class="l" colspan="5">No notable price moves.</td></tr>')+'</tbody></table>';
-    var newp='<div class="h3" style="margin-top:1.25rem;">New products &amp; stockouts</div><table class="dt"><thead><tr><th class="l">Competitor</th><th>New products</th><th>New stockouts</th></tr></thead><tbody>'
-      +comps.map(function(c){ return '<tr><td class="l nm">'+esc(c.name)+'</td><td>'+fmt(c.newProducts)+'</td><td>'+fmt((c.stockouts||[]).length)+'</td></tr>'; }).join('')+'</tbody></table>';
-    var sl = stock.length ? '<div class="h3" style="margin-top:1.25rem;">Recent stockouts</div><table class="dt"><tbody>'
-      +stock.slice(0,40).map(function(s){return '<tr><td class="l nm">'+esc(s.name)+'</td><td class="l">'+esc(nameOf[s.competitor]||s.competitor)+'</td></tr>';}).join('')+'</tbody></table>' : '';
-    document.getElementById('panel-pricing').innerHTML=mv+newp+sl;
+    var bar2='<div class="filters">'+vendorSel()+genderSel()+'</div>';
+    var mv='<div class="h3">Price moves (&gt;5%, '+moves.length+')</div><table class="dt"><thead><tr><th class="l">Product</th><th class="l">Vendor</th><th class="l">Gender</th><th>From</th><th>To</th><th>Δ</th></tr></thead><tbody>'
+      +(moves.slice(0,200).map(function(m){ var d=m.from?Math.round((m.to-m.from)/m.from*100):0;
+        return '<tr><td class="l nm">'+esc(m.name)+'</td><td class="l">'+esc(nameOf[m.competitor]||m.competitor)+'</td><td class="l">'+(GLAB[m.gender]||'—')+'</td><td>'+fmt(m.from)+'</td><td>'+fmt(m.to)+'</td><td style="color:'+(d<0?'var(--ok-fg)':'var(--danger)')+'">'+(d>0?'+':'')+d+'%</td></tr>';
+      }).join('')||'<tr><td class="l" colspan="6">No notable price moves.</td></tr>')+'</tbody></table>';
+    var sl='<div class="h3" style="margin-top:1.25rem;">Recent stockouts ('+stock.length+')</div><table class="dt"><thead><tr><th class="l">Product</th><th class="l">Vendor</th><th class="l">Gender</th></tr></thead><tbody>'
+      +(stock.slice(0,200).map(function(s){return '<tr><td class="l nm">'+esc(s.name)+'</td><td class="l">'+esc(nameOf[s.competitor]||s.competitor)+'</td><td class="l">'+(GLAB[s.gender]||'—')+'</td></tr>';}).join('')||'<tr><td class="l" colspan="3">No recent stockouts.</td></tr>')+'</tbody></table>';
+    var newp='<div class="h3" style="margin-top:1.25rem;">New products (per vendor)</div><table class="dt"><thead><tr><th class="l">Vendor</th><th>New products</th></tr></thead><tbody>'
+      +comps.map(function(c){ return '<tr><td class="l nm">'+esc(c.name)+'</td><td>'+fmt(c.newProducts)+'</td></tr>'; }).join('')+'</tbody></table>';
+    var panel=document.getElementById('panel-pricing');
+    panel.innerHTML=bar2+mv+sl+newp;
+    wireGlobals(panel);
   }
 
   function show(tab){
