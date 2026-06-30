@@ -55,20 +55,28 @@ export async function openCloudflareSession(origin: string): Promise<CloudflareS
   await waitForClear();
 
   const doFetch = async (url: string): Promise<string> => {
-    for (let attempt = 1; attempt <= 4; attempt++) {
-      const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
-      if (resp && resp.status() === 200) {
-        const body = await resp.text();
-        // A real API response is JSON/text; an HTML doc here means a challenge page.
-        if (!/^\s*<(?:!doctype|html)/i.test(body)) return body;
+    let lastErr = "";
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        // Re-warm on an HTML page first. Cloudflare re-challenges a direct API navigation
+        // made from a cold JSON page, but the clearance is held across the context, so
+        // visiting the origin homepage is near-instant and primes the next API nav. Without
+        // this, each API page eats a full (unsolvable, on a JSON URL) challenge wait.
+        await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 60_000 });
+        await waitForClear();
+        const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
+        if (resp?.status() === 200) {
+          const body = await resp.text();
+          // A real API response is JSON/text; an HTML doc here means a challenge page.
+          if (!/^\s*<(?:!doctype|html)/i.test(body)) return body;
+        }
+        lastErr = `status ${resp?.status() ?? "none"}`;
+      } catch (err) {
+        lastErr = err instanceof Error ? err.message : String(err);
       }
-      // Re-challenged → let Cloudflare auto-clear, then read the rendered body text.
-      await waitForClear();
-      const rendered = await page.innerText("body").catch(() => "");
-      if (rendered && !CHALLENGE_RE.test(rendered)) return rendered;
-      await page.waitForTimeout(2000 * attempt);
+      await page.waitForTimeout(1500 * attempt);
     }
-    throw new Error(`Cloudflare kept challenging ${url}`);
+    throw new Error(`Cloudflare fetch failed for ${url}: ${lastErr}`);
   };
 
   // Serialize navigations — one page/tab can't be in two places at once.
