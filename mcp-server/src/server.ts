@@ -15,6 +15,7 @@ import { readPool } from "./db.js";
 import { startDigestScheduler } from "./digestScheduler.js";
 import { health } from "./health.js";
 import { tools } from "./tools/index.js";
+import { adminWritePool } from "./writePool.js";
 
 /**
  * Build an MCP server instance with all tools registered. Per-tool role gating
@@ -60,7 +61,9 @@ export function createApp(): express.Express {
   // hop so req.ip is the real client (and express-rate-limit in the MCP auth router
   // stops throwing ERR_ERL_UNEXPECTED_X_FORWARDED_FOR).
   app.set("trust proxy", 1);
-  const pool = readPool();
+  // Write pool: the OAuth provider now persists clients + refresh tokens (DATABASE_URL,
+  // not the possibly read-only replica). Auth-time reads (whitelist) ride along fine.
+  const pool = adminWritePool();
   const provider = createMyTimeProvider(pool);
   const issuerUrl = new URL(requireEnv("MCP_PUBLIC_URL"));
   const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(issuerUrl);
