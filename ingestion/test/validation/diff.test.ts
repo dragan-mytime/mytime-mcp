@@ -22,7 +22,16 @@ describe("diffVsDb", () => {
   it("flags a discount the DB missed as an error", () => {
     const live: LiveSnapshot = { price: 1000, salePrice: 800, stockStatus: "in_stock" };
     const m = diffVsDb(live, db());
-    expect(m.find((x) => x.field === "salePrice")?.severity).toBe("error");
+    const sale = m.find((x) => x.field === "salePrice");
+    expect(sale?.severity).toBe("error");
+    expect(sale?.note).toMatch(/live shows a discount/i);
+  });
+  it("flags a stale DB discount the live page no longer shows", () => {
+    const live: LiveSnapshot = { price: 1000, salePrice: null, stockStatus: "in_stock" };
+    const m = diffVsDb(live, db({ salePrice: 800 }));
+    const sale = m.find((x) => x.field === "salePrice");
+    expect(sale?.severity).toBe("error");
+    expect(sale?.note).toMatch(/no longer shows/i);
   });
   it("ignores price differences within tolerance", () => {
     const live: LiveSnapshot = { price: 1000.4, stockStatus: "in_stock" };

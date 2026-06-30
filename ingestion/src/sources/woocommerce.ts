@@ -15,57 +15,71 @@ const MAX_PAGES = 100; // safety cap
 const ENRICH_CONCURRENCY = 8; // parallel product-page fetches for on-sale enrichment
 
 /**
- * Parse WooCommerce sale price from a rendered product page HTML.
- *
- * WooCommerce price markup for on-sale products:
- *   <p class="price ..."><del>...<bdi>12.690 ден</bdi>...</del> <ins>...<bdi>6.345 ден</bdi>...</ins></p>
- *
- * MKD numbers use "." as a thousands separator (12.690 = 12690, no decimals).
- * Strips all non-digit characters to parse.
- *
- * Returns { regular, sale } where:
- *   - regular = amount inside <del>...<bdi>...</bdi>...</del>
- *   - sale    = amount inside <ins>...<bdi>...</bdi>...</ins>
- *   - If no <del>/<ins> pair, returns { regular: <single amount or null>, sale: null }
+ * First monetary amount in an HTML fragment: the leading digit run that follows a
+ * `woocommerce-Price-amount` span or a `<bdi>` (the price), excluding the currency
+ * symbol that follows. The "ден" symbol may render as text ("денари") or hex entities
+ * (`&#x434;…`) whose digits must NOT be parsed. MKD uses "." as a thousands separator
+ * (12.690 = 12690), so all non-digit characters are stripped from the captured run.
  */
-export function parseWooSalePrice(html: string): {
-  regular: number | null;
-  sale: number | null;
-} {
+function priceAmount(fragment: string): number | null {
+  const m = fragment.match(/(?:woocommerce-Price-amount[^>]*>|<bdi[^>]*>)\s*([\d.,]+)/i);
+  if (!m) return null;
+  const digits = (m[1] ?? "").replace(/[^\d]/g, "");
+  return digits ? Number(digits) : null;
+}
+
+/**
+ * Markup-agnostic sale extraction from a price fragment:
+ *   - regular = the amount inside `<del>…</del>`
+ *   - sale    = the first amount AFTER `</del>` (covers `<ins>`, `<bdi>`, or a plain
+ *               `<span class="woocommerce-Price-amount">` — Bozinovski's catalog-sale form)
+ *   - no `<del>` → single price as `regular`, `sale: null`
+ */
+function extractSale(fragment: string): { regular: number | null; sale: number | null } {
+  const del = fragment.match(/<del\b[^>]*>([\s\S]*?)<\/del>/i);
+  if (del && del.index != null) {
+    const regular = priceAmount(del[1] ?? "");
+    const sale = priceAmount(fragment.slice(del.index + del[0].length));
+    return { regular, sale };
+  }
+  return { regular: priceAmount(fragment), sale: null };
+}
+
+/**
+ * Parse the sale price from a rendered WooCommerce **product page** — extracts the
+ * `<p class="price">` block and reads it markup-agnostically (handles both B-Watch's
+ * `<del><bdi>/<ins><bdi>` and Bozinovski's `<del><span>…</span></del> <span>` forms).
+ */
+export function parseWooSalePrice(html: string): { regular: number | null; sale: number | null } {
   try {
-    // Find the first <p> with "price" in its class attribute (non-greedy body)
-    const pBlock = html.match(/<p\b[^>]*class="[^"]*price[^"]*"[^>]*>([\s\S]*?)<\/p>/);
-    if (!pBlock) return { regular: null, sale: null };
-    const block = pBlock[1] ?? "";
-
-    // Helper: capture ONLY the leading numeric run inside <bdi> (the price), before
-    // the currency symbol. The "ден" symbol renders as hex entities (&#x434;&#x435;…)
-    // whose digits would otherwise be concatenated onto the price. Dots are MKD
-    // thousands separators, so strip them to get the integer denar amount.
-    const parseBdi = (s: string): number | null => {
-      const m = s.match(/<bdi[^>]*>\s*([\d.,]+)/);
-      if (!m) return null;
-      const digits = (m[1] ?? "").replace(/[^\d]/g, "");
-      if (!digits) return null;
-      return Number(digits);
-    };
-
-    // Try del (regular) + ins (sale)
-    const delMatch = block.match(/<del\b[^>]*>([\s\S]*?)<\/del>/);
-    const insMatch = block.match(/<ins\b[^>]*>([\s\S]*?)<\/ins>/);
-
-    if (delMatch && insMatch) {
-      const regular = parseBdi(delMatch[1] ?? "");
-      const sale = parseBdi(insMatch[1] ?? "");
-      return { regular, sale };
-    }
-
-    // No del/ins — single price
-    const single = parseBdi(block);
-    return { regular: single, sale: null };
+    const block = html.match(/<p\b[^>]*class="[^"]*\bprice\b[^"]*"[^>]*>([\s\S]*?)<\/p>/i);
+    if (!block) return { regular: null, sale: null };
+    return extractSale(block[1] ?? "");
   } catch {
     return { regular: null, sale: null };
   }
+}
+
+/**
+ * Parse WooCommerce shop/category **listing** tiles → `{ permalink, regular, sale }` per
+ * product. Each `<li class="product …">` carries the product link plus the same
+ * `get_price_html()` markup as the product page. Used to detect catalog sales the Store
+ * API hides (e.g. Bozinovski's Evergreen 30% promo).
+ */
+export function parseListingTiles(
+  html: string,
+): { permalink: string; regular: number | null; sale: number | null }[] {
+  const out: { permalink: string; regular: number | null; sale: number | null }[] = [];
+  const tiles = html.match(/<li\b[^>]*class="[^"]*\bproduct\b[^"]*"[\s\S]*?<\/li>/gi) ?? [];
+  for (const tile of tiles) {
+    const href = tile.match(/<a\b[^>]*href="([^"]+)"/i)?.[1];
+    if (!href) continue;
+    const priceIdx = tile.search(/<(?:span|p)\b[^>]*class="[^"]*\bprice\b[^"]*"/i);
+    const frag = priceIdx >= 0 ? tile.slice(priceIdx) : tile;
+    const { regular, sale } = extractSale(frag);
+    out.push({ permalink: href, regular, sale });
+  }
+  return out;
 }
 
 interface WcTerm {
@@ -95,6 +109,63 @@ interface WcProduct {
   images?: { src?: string }[];
   categories?: { name?: string }[];
   attributes?: WcAttr[];
+}
+
+/**
+ * Sites whose WooCommerce Store API hides catalog/category sales (`on_sale: false`,
+ * `regular_price === price`). For these we derive discounts by scraping the rendered
+ * `/shop/` listing pages instead of trusting the API flag. Bozinovski runs a 30%
+ * Evergreen catalog sale the API doesn't expose. Add a site id here when its API is
+ * found to under-report sales.
+ */
+const LISTING_SALE_SITES = new Set<string>(["bozinovski"]);
+
+const normPermalink = (u: string): string =>
+  (u.split(/[?#]/)[0] ?? u).toLowerCase().replace(/\/+$/, "");
+
+/**
+ * Build a `permalink → {regular, sale}` map of on-sale products by scraping every
+ * `/shop/` listing page (the catalog-sale source of truth when the Store API hides it).
+ * Bounded concurrency, per-page timeout, failure-isolated; a page cap guards runaways.
+ */
+async function scrapeListingSaleMap(
+  base: string,
+): Promise<Map<string, { regular: number; sale: number }>> {
+  const map = new Map<string, { regular: number; sale: number }>();
+  const fetchPage = async (n: number): Promise<string | null> => {
+    try {
+      const res = await fetch(`${base}/shop/page/${n}/`, {
+        headers: { "User-Agent": BROWSER_UA },
+        signal: AbortSignal.timeout(30_000),
+      });
+      return res.ok ? await res.text() : null;
+    } catch {
+      return null;
+    }
+  };
+  const ingest = (html: string): void => {
+    for (const t of parseListingTiles(html)) {
+      if (t.regular != null && t.sale != null && t.sale < t.regular) {
+        map.set(normPermalink(t.permalink), { regular: t.regular, sale: t.sale });
+      }
+    }
+  };
+
+  const first = await fetchPage(1);
+  if (first == null) return map;
+  ingest(first);
+  const nums = [...first.matchAll(/\/shop\/page\/(\d+)\//g)].map((m) => Number(m[1]));
+  const lastPage = Math.min(nums.length ? Math.max(...nums) : 1, 400);
+
+  let cursor = 2;
+  const worker = async (): Promise<void> => {
+    while (cursor <= lastPage) {
+      const html = await fetchPage(cursor++);
+      if (html) ingest(html);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(6, Math.max(1, lastPage - 1)) }, worker));
+  return map;
 }
 
 const termOf = (p: WcProduct, taxonomy: string): string | null => {
@@ -169,6 +240,27 @@ export const woocommerceCollector: ProductCollector = {
     }
 
     const out: ProductObservation[] = rawProducts.map(mapProduct);
+
+    // Phase 2a: for sites whose Store API hides catalog sales (LISTING_SALE_SITES),
+    // derive discounts from the rendered /shop/ listing pages and apply by permalink.
+    // This replaces the on_sale-gated per-product scrape below (their on_sale is unreliable).
+    if (LISTING_SALE_SITES.has(target.id)) {
+      const saleMap = await scrapeListingSaleMap(base);
+      for (let i = 0; i < rawProducts.length; i++) {
+        const p = rawProducts[i];
+        const obs = out[i];
+        if (!p?.permalink || !obs) continue;
+        const hit = saleMap.get(normPermalink(p.permalink));
+        if (hit) {
+          const d = deriveDiscount(hit.regular, hit.sale);
+          obs.price = hit.regular;
+          obs.salePrice = d.salePrice;
+          obs.discountAmount = d.discountAmount;
+          obs.discountPct = d.discountPct;
+        }
+      }
+      return out;
+    }
 
     // Phase 2: enrich on-sale products by scraping their permalink for real prices.
     // The Store API incorrectly reports sale_price == regular_price for on-sale items.
