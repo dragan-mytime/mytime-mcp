@@ -26,7 +26,7 @@ const CLOUDFLARE_SITES = new Set<string>(["watch-club"]);
  * Retries transient failures (Firecrawl 5xx / "Bad Gateway" / unsuccessful renders) with
  * backoff — a single hiccup mid-pagination must not abort the whole site's collection.
  */
-async function firecrawlText(url: string, attempts = 3): Promise<string> {
+async function firecrawlText(url: string, attempts = 5): Promise<string> {
   const key = optionalEnv("FIRECRAWL_API_KEY");
   if (!key) throw new Error("FIRECRAWL_API_KEY required for a Cloudflare-protected site");
   let lastErr = "";
@@ -35,8 +35,16 @@ async function firecrawlText(url: string, attempts = 3): Promise<string> {
       const res = await fetch("https://api.firecrawl.dev/v2/scrape", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ url, formats: ["rawHtml"], onlyMainContent: false }),
-        signal: AbortSignal.timeout(120_000),
+        body: JSON.stringify({
+          url,
+          formats: ["rawHtml"],
+          onlyMainContent: false,
+          // "auto" starts on the cheap proxy and auto-escalates to stealth when Cloudflare
+          // blocks; the longer render budget cuts the 408 timeouts seen on this site.
+          proxy: "auto",
+          timeout: 90_000,
+        }),
+        signal: AbortSignal.timeout(150_000),
       });
       if (!res.ok) throw new Error(`Firecrawl HTTP ${res.status}`);
       const j = (await res.json()) as { success?: boolean; data?: { rawHtml?: string } };
@@ -44,7 +52,7 @@ async function firecrawlText(url: string, attempts = 3): Promise<string> {
       return j.data.rawHtml;
     } catch (err) {
       lastErr = err instanceof Error ? err.message : String(err);
-      if (attempt < attempts) await new Promise((r) => setTimeout(r, 2000 * attempt));
+      if (attempt < attempts) await new Promise((r) => setTimeout(r, 3000 * attempt));
     }
   }
   throw new Error(`Firecrawl failed for ${url} after ${attempts} attempts: ${lastErr}`);
