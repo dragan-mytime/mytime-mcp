@@ -289,6 +289,11 @@ export const woocommerceCollector: ProductCollector = {
         return out;
       }
 
+      // Cloudflare sites: skip per-product on-sale enrichment — each permalink would be a
+      // slow browser navigation (seconds each, hundreds of items). The Store API's current
+      // `price` is already correct; we forgo only the original-vs-sale split for those.
+      if (session) return out;
+
       // Phase 2: enrich on-sale products by scraping their permalink for real prices.
       // The Store API incorrectly reports sale_price == regular_price for on-sale items.
       // Bounded concurrency for direct sites; a browser session serializes internally.
