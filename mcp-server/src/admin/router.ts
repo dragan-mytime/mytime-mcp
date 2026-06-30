@@ -10,7 +10,10 @@ import { layout } from "./render.js";
 
 export function adminRouter(): Router {
   const r = express.Router();
-  r.use(express.urlencoded({ extended: false }));
+  // Digest prompt bodies can be long and are bilingual (Cyrillic URL-encodes to
+  // ~6x its length), so the default 100kb form limit 413s a full prompt before the
+  // handler runs — surfacing as a blank Preview. nginx already allows 25m.
+  r.use(express.urlencoded({ extended: false, limit: "2mb" }));
 
   // Unguarded auth endpoints
   r.get("/auth/login", loginHandler);
