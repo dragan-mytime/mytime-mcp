@@ -1,4 +1,4 @@
-import { optionalEnv, type ProductObservation } from "@mytime/shared";
+import type { ProductObservation } from "@mytime/shared";
 import {
   cleanText,
   deriveDiscount,
@@ -6,6 +6,7 @@ import {
   normalizeGender,
 } from "../pipeline/normalize.js";
 import type { CollectorContext, ProductCollector } from "./_collector.js";
+import { type CloudflareSession, openCloudflareSession } from "./browser-fetch.js";
 
 const UA = "MyTimeBI/1.0 (+https://mcp.mytimeprime.mk)";
 const BROWSER_UA =
@@ -16,51 +17,14 @@ const ENRICH_CONCURRENCY = 8; // parallel product-page fetches for on-sale enric
 
 /**
  * WooCommerce sites whose origin is behind a Cloudflare JS challenge (the whole site
- * 403s a plain fetch with a "Just a moment…" page). Their Store API + pages are fetched
- * through Firecrawl, which renders the challenge in a real browser and returns the body.
+ * 403s a plain fetch with a "Just a moment…" page, and even the Store API is WAF-blocked).
+ * For these we drive a headless Chromium that solves the challenge once and then fetches
+ * each Store-API page by navigating to its URL (see ./browser-fetch.ts).
  */
 const CLOUDFLARE_SITES = new Set<string>(["watch-club"]);
 
-/**
- * Scrape a URL's raw body via Firecrawl (passes Cloudflare's JS challenge).
- * Retries transient failures (Firecrawl 5xx / "Bad Gateway" / unsuccessful renders) with
- * backoff — a single hiccup mid-pagination must not abort the whole site's collection.
- */
-async function firecrawlText(url: string, attempts = 5): Promise<string> {
-  const key = optionalEnv("FIRECRAWL_API_KEY");
-  if (!key) throw new Error("FIRECRAWL_API_KEY required for a Cloudflare-protected site");
-  let lastErr = "";
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    try {
-      const res = await fetch("https://api.firecrawl.dev/v2/scrape", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url,
-          formats: ["rawHtml"],
-          onlyMainContent: false,
-          // "auto" starts on the cheap proxy and auto-escalates to stealth when Cloudflare
-          // blocks; the longer render budget cuts the 408 timeouts seen on this site.
-          proxy: "auto",
-          timeout: 90_000,
-        }),
-        signal: AbortSignal.timeout(150_000),
-      });
-      if (!res.ok) throw new Error(`Firecrawl HTTP ${res.status}`);
-      const j = (await res.json()) as { success?: boolean; data?: { rawHtml?: string } };
-      if (!j.success || !j.data?.rawHtml) throw new Error("Firecrawl render unsuccessful");
-      return j.data.rawHtml;
-    } catch (err) {
-      lastErr = err instanceof Error ? err.message : String(err);
-      if (attempt < attempts) await new Promise((r) => setTimeout(r, 3000 * attempt));
-    }
-  }
-  throw new Error(`Firecrawl failed for ${url} after ${attempts} attempts: ${lastErr}`);
-}
-
-/** Fetch a URL's text either directly or, for Cloudflare-protected sites, via Firecrawl. */
-async function wooFetchText(url: string, viaFirecrawl: boolean, ua: string): Promise<string> {
-  if (viaFirecrawl) return firecrawlText(url);
+/** Plain fetch a URL's text (the normal path for non-Cloudflare sites). */
+async function directFetchText(url: string, ua: string): Promise<string> {
   const res = await fetch(url, {
     headers: { "User-Agent": ua },
     signal: AbortSignal.timeout(30_000),
@@ -278,82 +242,92 @@ export const woocommerceCollector: ProductCollector = {
   appliesTo: (t) => t.web.platform === "woocommerce" && !!t.web.url,
   async collect({ target }: CollectorContext): Promise<ProductObservation[]> {
     const base = new URL(target.web.url ?? "").origin;
-    const viaFc = CLOUDFLARE_SITES.has(target.id);
+    // Cloudflare-protected sites get a headless-Chromium session (solve the challenge once,
+    // then fetch each Store-API page / product page by navigating to its URL).
+    const session: CloudflareSession | null = CLOUDFLARE_SITES.has(target.id)
+      ? await openCloudflareSession(base)
+      : null;
+    const fetchText = (url: string, ua: string): Promise<string> =>
+      session ? session.fetchText(url) : directFetchText(url, ua);
 
-    // Phase 1: page through the Store API and build observations synchronously.
-    // Cloudflare-protected sites (viaFc) are routed through Firecrawl.
-    const rawProducts: WcProduct[] = [];
-    for (let page = 1; page <= MAX_PAGES; page++) {
-      const url = `${base}/wp-json/wc/store/v1/products?per_page=${PER_PAGE}&page=${page}`;
-      let list: WcProduct[];
-      try {
-        list = JSON.parse(await wooFetchText(url, viaFc, UA)) as WcProduct[];
-      } catch (err) {
-        throw new Error(`${target.id} WC API failed (page ${page}): ${(err as Error).message}`);
+    try {
+      // Phase 1: page through the Store API and build observations synchronously.
+      const rawProducts: WcProduct[] = [];
+      for (let page = 1; page <= MAX_PAGES; page++) {
+        const url = `${base}/wp-json/wc/store/v1/products?per_page=${PER_PAGE}&page=${page}`;
+        let list: WcProduct[];
+        try {
+          list = JSON.parse(await fetchText(url, UA)) as WcProduct[];
+        } catch (err) {
+          throw new Error(`${target.id} WC API failed (page ${page}): ${(err as Error).message}`);
+        }
+        if (!Array.isArray(list) || list.length === 0) break;
+        for (const p of list) rawProducts.push(p);
+        if (list.length < PER_PAGE) break;
       }
-      if (!Array.isArray(list) || list.length === 0) break;
-      for (const p of list) rawProducts.push(p);
-      if (list.length < PER_PAGE) break;
-    }
 
-    const out: ProductObservation[] = rawProducts.map(mapProduct);
+      const out: ProductObservation[] = rawProducts.map(mapProduct);
 
-    // Phase 2a: for sites whose Store API hides catalog sales (LISTING_SALE_SITES),
-    // derive discounts from the rendered /shop/ listing pages and apply by permalink.
-    // This replaces the on_sale-gated per-product scrape below (their on_sale is unreliable).
-    if (LISTING_SALE_SITES.has(target.id)) {
-      const saleMap = await scrapeListingSaleMap(base);
+      // Phase 2a: for sites whose Store API hides catalog sales (LISTING_SALE_SITES),
+      // derive discounts from the rendered /shop/ listing pages and apply by permalink.
+      // This replaces the on_sale-gated per-product scrape below (their on_sale is unreliable).
+      if (LISTING_SALE_SITES.has(target.id)) {
+        const saleMap = await scrapeListingSaleMap(base);
+        for (let i = 0; i < rawProducts.length; i++) {
+          const p = rawProducts[i];
+          const obs = out[i];
+          if (!p?.permalink || !obs) continue;
+          const hit = saleMap.get(normPermalink(p.permalink));
+          if (hit) {
+            const d = deriveDiscount(hit.regular, hit.sale);
+            obs.price = hit.regular;
+            obs.salePrice = d.salePrice;
+            obs.discountAmount = d.discountAmount;
+            obs.discountPct = d.discountPct;
+          }
+        }
+        return out;
+      }
+
+      // Phase 2: enrich on-sale products by scraping their permalink for real prices.
+      // The Store API incorrectly reports sale_price == regular_price for on-sale items.
+      // Bounded concurrency for direct sites; a browser session serializes internally.
+      const onSale: { obs: ProductObservation; permalink: string }[] = [];
       for (let i = 0; i < rawProducts.length; i++) {
         const p = rawProducts[i];
         const obs = out[i];
-        if (!p?.permalink || !obs) continue;
-        const hit = saleMap.get(normPermalink(p.permalink));
-        if (hit) {
-          const d = deriveDiscount(hit.regular, hit.sale);
-          obs.price = hit.regular;
-          obs.salePrice = d.salePrice;
-          obs.discountAmount = d.discountAmount;
-          obs.discountPct = d.discountPct;
-        }
+        if (p?.on_sale && p.permalink && obs) onSale.push({ obs, permalink: p.permalink });
       }
-      return out;
-    }
 
-    // Phase 2: enrich on-sale products by scraping their permalink for real prices.
-    // The Store API incorrectly reports sale_price == regular_price for on-sale items.
-    // Fetched with bounded concurrency — a busy store can have 1000+ on-sale items,
-    // and sequential fetching dominates the whole run.
-    const onSale: { obs: ProductObservation; permalink: string }[] = [];
-    for (let i = 0; i < rawProducts.length; i++) {
-      const p = rawProducts[i];
-      const obs = out[i];
-      if (p?.on_sale && p.permalink && obs) onSale.push({ obs, permalink: p.permalink });
-    }
-
-    let cursor = 0;
-    const worker = async (): Promise<void> => {
-      while (cursor < onSale.length) {
-        const item = onSale[cursor++];
-        if (!item) continue;
-        try {
-          const { regular, sale } = parseWooSalePrice(
-            await wooFetchText(item.permalink, viaFc, BROWSER_UA),
-          );
-          // Only override if we got a genuine discount from the page
-          if (regular != null && sale != null && sale < regular) {
-            const discount = deriveDiscount(regular, sale);
-            item.obs.price = regular;
-            item.obs.salePrice = discount.salePrice;
-            item.obs.discountAmount = discount.discountAmount;
-            item.obs.discountPct = discount.discountPct;
+      let cursor = 0;
+      const worker = async (): Promise<void> => {
+        while (cursor < onSale.length) {
+          const item = onSale[cursor++];
+          if (!item) continue;
+          try {
+            const { regular, sale } = parseWooSalePrice(
+              await fetchText(item.permalink, BROWSER_UA),
+            );
+            // Only override if we got a genuine discount from the page
+            if (regular != null && sale != null && sale < regular) {
+              const discount = deriveDiscount(regular, sale);
+              item.obs.price = regular;
+              item.obs.salePrice = discount.salePrice;
+              item.obs.discountAmount = discount.discountAmount;
+              item.obs.discountPct = discount.discountPct;
+            }
+          } catch {
+            // One page failure must not abort the whole run — skip silently
           }
-        } catch {
-          // One page failure must not abort the whole run — skip silently
         }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(ENRICH_CONCURRENCY, onSale.length) }, worker));
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(ENRICH_CONCURRENCY, onSale.length) }, worker),
+      );
 
-    return out;
+      return out;
+    } finally {
+      if (session) await session.close();
+    }
   },
 };
