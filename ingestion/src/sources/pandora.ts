@@ -1,8 +1,8 @@
 import { optionalEnv, type ProductObservation } from "@mytime/shared";
 import { cleanText, deriveDiscount, toNumber } from "../pipeline/normalize.js";
 import type { CollectorContext, ProductCollector } from "./_collector.js";
+import { openCloudflareSession } from "./browser-fetch.js";
 
-const UA = "MyTimeBI/1.0 (+https://mcp.mytimeprime.mk)";
 const MAX = Number(optionalEnv("WEB_MAX_PRODUCTS", "300"));
 const LISTING = "/mk/proizvodi"; // Magento all-products category (24/page, ?p=N)
 
@@ -57,6 +57,11 @@ function parseListing(html: string): ProductObservation[] {
 /**
  * Pandora (Magento) collector via the server-rendered all-products listing.
  * Monobrand — depletion reflects demand for the single brand only.
+ *
+ * pandorashop.mk sits behind a Cloudflare JS challenge (every plain fetch 403s), so the
+ * listing pages are fetched through a headful-Chromium session (see ./browser-fetch.ts) —
+ * the same mechanism as watch-club. The listing HTML stays server-rendered behind the
+ * challenge, so the existing `parseListing` works unchanged on the fetched body.
  */
 export const pandoraCollector: ProductCollector = {
   id: "pandora-magento",
@@ -66,26 +71,32 @@ export const pandoraCollector: ProductCollector = {
     const base = new URL(target.web.url ?? "").origin;
     const out: ProductObservation[] = [];
     const seen = new Set<string>();
+    const session = await openCloudflareSession(base);
 
-    for (let page = 1; page <= 200 && out.length < MAX; page++) {
-      const url = `${base}${LISTING}?p=${page}`;
-      const res = await fetch(url, {
-        headers: { "User-Agent": UA },
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!res.ok) throw new Error(`Pandora HTTP ${res.status} (page ${page})`);
-      const items = parseListing(await res.text());
-      if (items.length === 0) break;
-      let added = 0;
-      for (const it of items) {
-        if (!seen.has(it.externalId)) {
-          seen.add(it.externalId);
-          out.push(it);
-          added++;
+    try {
+      for (let page = 1; page <= 200 && out.length < MAX; page++) {
+        const url = `${base}${LISTING}?p=${page}`;
+        let html: string;
+        try {
+          html = await session.fetchText(url);
+        } catch (err) {
+          throw new Error(`Pandora page ${page} failed: ${(err as Error).message}`);
         }
+        const items = parseListing(html);
+        if (items.length === 0) break;
+        let added = 0;
+        for (const it of items) {
+          if (!seen.has(it.externalId)) {
+            seen.add(it.externalId);
+            out.push(it);
+            added++;
+          }
+        }
+        if (added === 0) break; // pagination exhausted (repeating page)
       }
-      if (added === 0) break; // pagination exhausted (repeating page)
+      return out.slice(0, MAX);
+    } finally {
+      await session.close();
     }
-    return out.slice(0, MAX);
   },
 };
