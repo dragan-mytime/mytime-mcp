@@ -64,7 +64,7 @@ export function normalizeType(
   const s = `${category ?? ""} ${name ?? ""}`.toLowerCase().trim();
   if (!s) return fallback;
   if (/(очил|наочар|eyewear|sunglass|glasses)/.test(s)) return "eyewear";
-  if (/(часовник|\bwatch|saat|zegar)/.test(s)) return "watches";
+  if (/(часовниц|часовник|\bwatch|saat|zegar)/.test(s)) return "watches";
   if (
     /(накит|jewel|прстен|обетк|ѓердан|гердан|огрлиц|белегз|нараквиц|приврзок|привезоц|привез|синџир|ланч|алк[аи]|алка|чокер|choker|bracelet|necklace|earring|\bring\b|pendant|charm)/.test(
       s,

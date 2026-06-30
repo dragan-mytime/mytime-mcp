@@ -4,6 +4,7 @@ import {
   deriveDiscount,
   normalizeBrand,
   normalizeGender,
+  normalizeType,
 } from "../pipeline/normalize.js";
 import type { CollectorContext, ProductCollector } from "./_collector.js";
 import { type CloudflareSession, openCloudflareSession } from "./browser-fetch.js";
@@ -192,7 +193,7 @@ const termOf = (p: WcProduct, taxonomy: string): string | null => {
   return cleanText(a?.terms?.[0]?.name);
 };
 
-function mapProduct(p: WcProduct): ProductObservation {
+export function mapProduct(p: WcProduct): ProductObservation {
   const minor = p.prices?.currency_minor_unit ?? 0;
   const major = (s?: string): number => Number(s ?? "0") / 10 ** minor;
   const regular = major(p.prices?.regular_price);
@@ -201,6 +202,9 @@ function mapProduct(p: WcProduct): ProductObservation {
   const category =
     cleanText(p.categories?.find((c) => cleanText(c.name) !== brand)?.name) ??
     cleanText(p.categories?.[0]?.name);
+
+  const GENDER_TAXONOMIES = ["pa_pol", "pa_sex", "pa_gender", "pa_rod"];
+  const genderTerm = GENDER_TAXONOMIES.map((tx) => termOf(p, tx)).find((v) => v != null) ?? null;
 
   const inStock = p.is_in_stock !== false;
   const low = p.low_stock_remaining ?? null;
@@ -211,7 +215,8 @@ function mapProduct(p: WcProduct): ProductObservation {
     brand,
     modelRef: p.slug ? p.slug.toUpperCase() : null,
     category,
-    gender: normalizeGender(termOf(p, "pa_pol")),
+    productType: normalizeType(category, cleanText(p.name)),
+    gender: normalizeGender(genderTerm) ?? normalizeGender(category),
     collection: null,
     attributes: null,
     url: cleanText(p.permalink),
