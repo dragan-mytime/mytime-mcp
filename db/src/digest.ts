@@ -13,6 +13,9 @@ export interface CompetitorDigest {
     onSaleToday: number;
     avgPct: number | null;
     samples: { name: string; was: number | null; now: number | null; pct: number | null }[];
+    // Today's on-sale products grouped (top 5 each) — which brands/categories are discounted.
+    byBrand: { brand: string; count: number; avgPct: number | null }[];
+    byCategory: { category: string; count: number; avgPct: number | null }[];
   };
   ads: {
     activeToday: number;
@@ -21,9 +24,19 @@ export interface CompetitorDigest {
       linkUrl: string | null;
       daysRunning: number | null;
       snapshotUrl: string | null;
+      mediaUrl: string | null;
+      mediaType: string | null;
     }[];
     stoppedCount: number;
-    longestRunning: { daysRunning: number | null; adTitle: string | null } | null;
+    // "Best performing" proxy = longest-running ad, with its creative for a visual hero.
+    longestRunning: {
+      adTitle: string | null;
+      daysRunning: number | null;
+      mediaUrl: string | null;
+      mediaType: string | null;
+      snapshotUrl: string | null;
+      linkUrl: string | null;
+    } | null;
   };
   social: { followers: Record<string, number> };
   inventory: {
@@ -75,10 +88,22 @@ interface SalesSampleRow {
   pct: string | null;
 }
 
+interface DiscountGroupRow {
+  target_id: string;
+  label: string; // brand or category
+  cnt: string | null;
+  avg_pct: string | null;
+}
+
 async function querySales(
   db: Db,
   competitorFilter: string | undefined,
-): Promise<{ agg: SalesAggRow[]; samples: SalesSampleRow[] }> {
+): Promise<{
+  agg: SalesAggRow[];
+  samples: SalesSampleRow[];
+  byBrand: DiscountGroupRow[];
+  byCategory: DiscountGroupRow[];
+}> {
   const filterClause = competitorFilter ? sql`AND p.target_id = ${competitorFilter}` : sql``;
 
   const aggResult = await db.execute(sql`
@@ -157,9 +182,49 @@ async function querySales(
     ORDER BY target_id, pct DESC
   `);
 
+  // Today's on-sale products grouped by brand / category (top 5 each, by count then depth).
+  const groupQuery = (col: "brand" | "category") => sql`
+    WITH dd AS (
+      SELECT DISTINCT pr.captured_date
+      FROM prices pr
+      JOIN products p ON p.id = pr.product_id
+      WHERE p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
+        ${filterClause}
+      ORDER BY pr.captured_date DESC
+      LIMIT 1
+    ),
+    today_date AS (SELECT MAX(captured_date) AS d FROM dd),
+    ranked AS (
+      SELECT
+        p.target_id,
+        p.${sql.raw(col)} AS label,
+        COUNT(*) AS cnt,
+        AVG(pr.discount_pct::float8) AS avg_pct,
+        ROW_NUMBER() OVER (
+          PARTITION BY p.target_id
+          ORDER BY COUNT(*) DESC, AVG(pr.discount_pct::float8) DESC
+        ) AS rn
+      FROM prices pr
+      JOIN products p ON p.id = pr.product_id
+      WHERE pr.captured_date = (SELECT d FROM today_date)
+        AND pr.discount_pct > 0
+        AND p.${sql.raw(col)} IS NOT NULL
+        AND p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
+        ${filterClause}
+      GROUP BY p.target_id, p.${sql.raw(col)}
+    )
+    SELECT target_id, label, cnt, avg_pct FROM ranked WHERE rn <= 5 ORDER BY target_id, cnt DESC
+  `;
+  const [byBrandResult, byCategoryResult] = await Promise.all([
+    db.execute(groupQuery("brand")),
+    db.execute(groupQuery("category")),
+  ]);
+
   return {
     agg: rows<SalesAggRow>(aggResult),
     samples: rows<SalesSampleRow>(sampleResult),
+    byBrand: rows<DiscountGroupRow>(byBrandResult),
+    byCategory: rows<DiscountGroupRow>(byCategoryResult),
   };
 }
 
@@ -171,6 +236,10 @@ interface AdsAggRow {
   stopped_count: string | null;
   longest_days: number | null;
   longest_title: string | null;
+  longest_media: string | null;
+  longest_media_type: string | null;
+  longest_snapshot: string | null;
+  longest_link: string | null;
 }
 
 interface NewAdRow {
@@ -179,6 +248,8 @@ interface NewAdRow {
   link_url: string | null;
   days_running: number | null;
   snapshot_url: string | null;
+  media_url: string | null;
+  media_type: string | null;
 }
 
 async function queryAds(
@@ -201,7 +272,8 @@ async function queryAds(
     today_date AS (SELECT MAX(captured_date) AS d FROM dd),
     prior_date AS (SELECT MIN(captured_date) AS d FROM dd),
     today_ads AS (
-      SELECT a.target_id, a.ad_archive_id, a.days_running, a.ad_title
+      SELECT a.target_id, a.ad_archive_id, a.days_running, a.ad_title,
+             a.media_url, a.media_type, a.snapshot_url, a.link_url
       FROM ad_observations a
       WHERE a.captured_date = (SELECT d FROM today_date)
         AND a.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
@@ -216,7 +288,7 @@ async function queryAds(
     ),
     longest AS (
       SELECT DISTINCT ON (target_id)
-        target_id, days_running, ad_title
+        target_id, days_running, ad_title, media_url, media_type, snapshot_url, link_url
       FROM today_ads
       ORDER BY target_id, days_running DESC NULLS LAST
     )
@@ -228,11 +300,16 @@ async function queryAds(
         AS stopped_count_placeholder,
       l.days_running                                                             AS longest_days,
       l.ad_title                                                                 AS longest_title,
+      l.media_url                                                                AS longest_media,
+      l.media_type                                                               AS longest_media_type,
+      l.snapshot_url                                                             AS longest_snapshot,
+      l.link_url                                                                 AS longest_link,
       SUM(CASE WHEN pa.ad_archive_id IS NOT NULL THEN 1 ELSE 0 END)            AS prior_count
     FROM today_ads ta
     LEFT JOIN prior_ads pa ON pa.ad_archive_id = ta.ad_archive_id
     LEFT JOIN longest l ON l.target_id = ta.target_id
-    GROUP BY ta.target_id, l.days_running, l.ad_title
+    GROUP BY ta.target_id, l.days_running, l.ad_title, l.media_url, l.media_type,
+             l.snapshot_url, l.link_url
   `);
 
   // Stopped count: ads in prior not in today
@@ -280,6 +357,8 @@ async function queryAds(
         a.link_url,
         a.days_running,
         a.snapshot_url,
+        a.media_url,
+        a.media_type,
         ROW_NUMBER() OVER (PARTITION BY a.target_id ORDER BY a.days_running ASC NULLS LAST) AS rn
       FROM ad_observations a
       WHERE a.captured_date = (SELECT d FROM today_date)
@@ -292,7 +371,7 @@ async function queryAds(
             AND prev.captured_date = (SELECT d FROM prior_date)
         )
     )
-    SELECT target_id, ad_title, link_url, days_running, snapshot_url
+    SELECT target_id, ad_title, link_url, days_running, snapshot_url, media_url, media_type
     FROM new_ads
     WHERE rn <= 5
     ORDER BY target_id
@@ -310,6 +389,10 @@ async function queryAds(
     stopped_count: String(stoppedMap.get(r.target_id) ?? 0),
     longest_days: r.longest_days,
     longest_title: r.longest_title,
+    longest_media: r.longest_media,
+    longest_media_type: r.longest_media_type,
+    longest_snapshot: r.longest_snapshot,
+    longest_link: r.longest_link,
   }));
 
   return {
@@ -573,6 +656,18 @@ export async function dailyDigest(
     arr.push(s);
     salesSamplesByTarget.set(s.target_id, arr);
   }
+  const byBrandByTarget = new Map<string, DiscountGroupRow[]>();
+  for (const b of salesData.byBrand) {
+    const arr = byBrandByTarget.get(b.target_id) ?? [];
+    arr.push(b);
+    byBrandByTarget.set(b.target_id, arr);
+  }
+  const byCategoryByTarget = new Map<string, DiscountGroupRow[]>();
+  for (const cgr of salesData.byCategory) {
+    const arr = byCategoryByTarget.get(cgr.target_id) ?? [];
+    arr.push(cgr);
+    byCategoryByTarget.set(cgr.target_id, arr);
+  }
 
   const adsByTarget = new Map(adsData.agg.map((r) => [r.target_id, r]));
   const newAdsByTarget = new Map<string, NewAdRow[]>();
@@ -623,6 +718,21 @@ export async function dailyDigest(
       linkUrl: a.link_url,
       daysRunning: a.days_running,
       snapshotUrl: a.snapshot_url,
+      mediaUrl: a.media_url,
+      mediaType: a.media_type,
+    }));
+
+    const toGroup = (r: DiscountGroupRow) => ({
+      count: r.cnt != null ? parseInt(r.cnt, 10) : 0,
+      avgPct: r.avg_pct != null ? parseFloat(r.avg_pct) : null,
+    });
+    const byBrand = (byBrandByTarget.get(targetId) ?? []).map((r) => ({
+      brand: r.label,
+      ...toGroup(r),
+    }));
+    const byCategory = (byCategoryByTarget.get(targetId) ?? []).map((r) => ({
+      category: r.label,
+      ...toGroup(r),
     }));
 
     const followers: Record<string, number> = {};
@@ -640,6 +750,8 @@ export async function dailyDigest(
         newlyDiscounted: sa?.newly_discounted != null ? parseInt(sa.newly_discounted, 10) : 0,
         ended: sa?.ended != null ? parseInt(sa.ended, 10) : 0,
         samples: salesSamples,
+        byBrand,
+        byCategory,
       },
       ads: {
         activeToday: aa?.active_today != null ? parseInt(aa.active_today, 10) : 0,
@@ -647,7 +759,14 @@ export async function dailyDigest(
         stoppedCount: aa?.stopped_count != null ? parseInt(aa.stopped_count, 10) : 0,
         longestRunning:
           aa != null && (aa.longest_days != null || aa.longest_title != null)
-            ? { daysRunning: aa.longest_days, adTitle: aa.longest_title }
+            ? {
+                adTitle: aa.longest_title,
+                daysRunning: aa.longest_days,
+                mediaUrl: aa.longest_media,
+                mediaType: aa.longest_media_type,
+                snapshotUrl: aa.longest_snapshot,
+                linkUrl: aa.longest_link,
+              }
             : null,
       },
       social: { followers },
