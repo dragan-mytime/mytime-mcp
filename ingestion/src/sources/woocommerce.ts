@@ -6,6 +6,7 @@ import {
   normalizeGender,
 } from "../pipeline/normalize.js";
 import type { CollectorContext, ProductCollector } from "./_collector.js";
+import { type CloudflareSession, openCloudflareSession } from "./browser-fetch.js";
 
 const UA = "MyTimeBI/1.0 (+https://mcp.mytimeprime.mk)";
 const BROWSER_UA =
@@ -13,6 +14,24 @@ const BROWSER_UA =
 const PER_PAGE = 100;
 const MAX_PAGES = 100; // safety cap
 const ENRICH_CONCURRENCY = 8; // parallel product-page fetches for on-sale enrichment
+
+/**
+ * WooCommerce sites whose origin is behind a Cloudflare JS challenge (the whole site
+ * 403s a plain fetch with a "Just a moment…" page, and even the Store API is WAF-blocked).
+ * For these we drive a headless Chromium that solves the challenge once and then fetches
+ * each Store-API page by navigating to its URL (see ./browser-fetch.ts).
+ */
+const CLOUDFLARE_SITES = new Set<string>(["watch-club"]);
+
+/** Plain fetch a URL's text (the normal path for non-Cloudflare sites). */
+async function directFetchText(url: string, ua: string): Promise<string> {
+  const res = await fetch(url, {
+    headers: { "User-Agent": ua },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.text();
+}
 
 /**
  * First monetary amount in an HTML fragment: the leading digit run that follows a
@@ -223,83 +242,97 @@ export const woocommerceCollector: ProductCollector = {
   appliesTo: (t) => t.web.platform === "woocommerce" && !!t.web.url,
   async collect({ target }: CollectorContext): Promise<ProductObservation[]> {
     const base = new URL(target.web.url ?? "").origin;
+    // Cloudflare-protected sites get a headless-Chromium session (solve the challenge once,
+    // then fetch each Store-API page / product page by navigating to its URL).
+    const session: CloudflareSession | null = CLOUDFLARE_SITES.has(target.id)
+      ? await openCloudflareSession(base)
+      : null;
+    const fetchText = (url: string, ua: string): Promise<string> =>
+      session ? session.fetchText(url) : directFetchText(url, ua);
 
-    // Phase 1: page through the Store API and build observations synchronously
-    const rawProducts: WcProduct[] = [];
-    for (let page = 1; page <= MAX_PAGES; page++) {
-      const url = `${base}/wp-json/wc/store/v1/products?per_page=${PER_PAGE}&page=${page}`;
-      const res = await fetch(url, {
-        headers: { "User-Agent": UA },
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!res.ok) throw new Error(`${target.id} WC API HTTP ${res.status} (page ${page})`);
-      const list = (await res.json()) as WcProduct[];
-      if (!Array.isArray(list) || list.length === 0) break;
-      for (const p of list) rawProducts.push(p);
-      if (list.length < PER_PAGE) break;
-    }
+    try {
+      // Phase 1: page through the Store API and build observations synchronously.
+      const rawProducts: WcProduct[] = [];
+      for (let page = 1; page <= MAX_PAGES; page++) {
+        const url = `${base}/wp-json/wc/store/v1/products?per_page=${PER_PAGE}&page=${page}`;
+        let list: WcProduct[];
+        try {
+          list = JSON.parse(await fetchText(url, UA)) as WcProduct[];
+        } catch (err) {
+          throw new Error(`${target.id} WC API failed (page ${page}): ${(err as Error).message}`);
+        }
+        if (!Array.isArray(list) || list.length === 0) break;
+        for (const p of list) rawProducts.push(p);
+        if (list.length < PER_PAGE) break;
+      }
 
-    const out: ProductObservation[] = rawProducts.map(mapProduct);
+      const out: ProductObservation[] = rawProducts.map(mapProduct);
 
-    // Phase 2a: for sites whose Store API hides catalog sales (LISTING_SALE_SITES),
-    // derive discounts from the rendered /shop/ listing pages and apply by permalink.
-    // This replaces the on_sale-gated per-product scrape below (their on_sale is unreliable).
-    if (LISTING_SALE_SITES.has(target.id)) {
-      const saleMap = await scrapeListingSaleMap(base);
+      // Phase 2a: for sites whose Store API hides catalog sales (LISTING_SALE_SITES),
+      // derive discounts from the rendered /shop/ listing pages and apply by permalink.
+      // This replaces the on_sale-gated per-product scrape below (their on_sale is unreliable).
+      if (LISTING_SALE_SITES.has(target.id)) {
+        const saleMap = await scrapeListingSaleMap(base);
+        for (let i = 0; i < rawProducts.length; i++) {
+          const p = rawProducts[i];
+          const obs = out[i];
+          if (!p?.permalink || !obs) continue;
+          const hit = saleMap.get(normPermalink(p.permalink));
+          if (hit) {
+            const d = deriveDiscount(hit.regular, hit.sale);
+            obs.price = hit.regular;
+            obs.salePrice = d.salePrice;
+            obs.discountAmount = d.discountAmount;
+            obs.discountPct = d.discountPct;
+          }
+        }
+        return out;
+      }
+
+      // Cloudflare sites: skip per-product on-sale enrichment — each permalink would be a
+      // slow browser navigation (seconds each, hundreds of items). The Store API's current
+      // `price` is already correct; we forgo only the original-vs-sale split for those.
+      if (session) return out;
+
+      // Phase 2: enrich on-sale products by scraping their permalink for real prices.
+      // The Store API incorrectly reports sale_price == regular_price for on-sale items.
+      // Bounded concurrency for direct sites; a browser session serializes internally.
+      const onSale: { obs: ProductObservation; permalink: string }[] = [];
       for (let i = 0; i < rawProducts.length; i++) {
         const p = rawProducts[i];
         const obs = out[i];
-        if (!p?.permalink || !obs) continue;
-        const hit = saleMap.get(normPermalink(p.permalink));
-        if (hit) {
-          const d = deriveDiscount(hit.regular, hit.sale);
-          obs.price = hit.regular;
-          obs.salePrice = d.salePrice;
-          obs.discountAmount = d.discountAmount;
-          obs.discountPct = d.discountPct;
-        }
+        if (p?.on_sale && p.permalink && obs) onSale.push({ obs, permalink: p.permalink });
       }
-      return out;
-    }
 
-    // Phase 2: enrich on-sale products by scraping their permalink for real prices.
-    // The Store API incorrectly reports sale_price == regular_price for on-sale items.
-    // Fetched with bounded concurrency — a busy store can have 1000+ on-sale items,
-    // and sequential fetching dominates the whole run.
-    const onSale: { obs: ProductObservation; permalink: string }[] = [];
-    for (let i = 0; i < rawProducts.length; i++) {
-      const p = rawProducts[i];
-      const obs = out[i];
-      if (p?.on_sale && p.permalink && obs) onSale.push({ obs, permalink: p.permalink });
-    }
-
-    let cursor = 0;
-    const worker = async (): Promise<void> => {
-      while (cursor < onSale.length) {
-        const item = onSale[cursor++];
-        if (!item) continue;
-        try {
-          const pageRes = await fetch(item.permalink, {
-            headers: { "User-Agent": BROWSER_UA },
-            signal: AbortSignal.timeout(30_000),
-          });
-          if (!pageRes.ok) continue;
-          const { regular, sale } = parseWooSalePrice(await pageRes.text());
-          // Only override if we got a genuine discount from the page
-          if (regular != null && sale != null && sale < regular) {
-            const discount = deriveDiscount(regular, sale);
-            item.obs.price = regular;
-            item.obs.salePrice = discount.salePrice;
-            item.obs.discountAmount = discount.discountAmount;
-            item.obs.discountPct = discount.discountPct;
+      let cursor = 0;
+      const worker = async (): Promise<void> => {
+        while (cursor < onSale.length) {
+          const item = onSale[cursor++];
+          if (!item) continue;
+          try {
+            const { regular, sale } = parseWooSalePrice(
+              await fetchText(item.permalink, BROWSER_UA),
+            );
+            // Only override if we got a genuine discount from the page
+            if (regular != null && sale != null && sale < regular) {
+              const discount = deriveDiscount(regular, sale);
+              item.obs.price = regular;
+              item.obs.salePrice = discount.salePrice;
+              item.obs.discountAmount = discount.discountAmount;
+              item.obs.discountPct = discount.discountPct;
+            }
+          } catch {
+            // One page failure must not abort the whole run — skip silently
           }
-        } catch {
-          // One page failure must not abort the whole run — skip silently
         }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(ENRICH_CONCURRENCY, onSale.length) }, worker));
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(ENRICH_CONCURRENCY, onSale.length) }, worker),
+      );
 
-    return out;
+      return out;
+    } finally {
+      if (session) await session.close();
+    }
   },
 };

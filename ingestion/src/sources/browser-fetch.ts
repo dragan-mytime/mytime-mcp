@@ -1,0 +1,94 @@
+import { type Browser, chromium } from "playwright";
+
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+const CHALLENGE_RE =
+  /just a moment|attention required|checking your browser|verifying you are human/i;
+
+export interface CloudflareSession {
+  /** Navigate to `url` and return the response body (JSON for Store-API endpoints). */
+  fetchText(url: string): Promise<string>;
+  /** Close the browser. Always call in a finally. */
+  close(): Promise<void>;
+}
+
+/**
+ * Open a Chromium session that has passed the Cloudflare JS challenge for `origin`.
+ *
+ * Some sites (watch-club) sit behind Cloudflare's managed challenge: plain fetch — and even an
+ * in-page `fetch()` to the Store REST API — gets a "Just a moment…" 403. A real browser solves
+ * the challenge by navigating, and a *top-level navigation* to an API URL then returns clean
+ * JSON (cf_clearance rides along).
+ *
+ * The browser must be **headful** — Cloudflare detects headless Chromium and serves an
+ * unsolvable challenge for the deeper pages (only the homepage + edge-cached API page 1 get
+ * through headless). On a server this means running under a virtual display: the ingestion
+ * process is launched via `xvfb-run` (see deploy/cron). Calls are serialized (single tab).
+ */
+export async function openCloudflareSession(origin: string): Promise<CloudflareSession> {
+  const browser: Browser = await chromium.launch({
+    headless: false,
+    args: [
+      "--no-sandbox",
+      "--disable-blink-features=AutomationControlled",
+      "--disable-dev-shm-usage",
+    ],
+  });
+  const context = await browser.newContext({
+    userAgent: BROWSER_UA,
+    locale: "mk-MK",
+    viewport: { width: 1366, height: 768 },
+  });
+  const page = await context.newPage();
+
+  const waitForClear = async (): Promise<void> => {
+    for (let i = 0; i < 30; i++) {
+      const title = await page.title().catch(() => "");
+      if (title && !CHALLENGE_RE.test(title)) return;
+      await page.waitForTimeout(2000);
+    }
+  };
+
+  // Solve the challenge once on the origin homepage to obtain the clearance cookie.
+  await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 60_000 });
+  await waitForClear();
+
+  const doFetch = async (url: string): Promise<string> => {
+    let lastErr = "";
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        // Re-warm on an HTML page first. Cloudflare re-challenges a direct API navigation
+        // made from a cold JSON page, but the clearance is held across the context, so
+        // visiting the origin homepage is near-instant and primes the next API nav. Without
+        // this, each API page eats a full (unsolvable, on a JSON URL) challenge wait.
+        await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 60_000 });
+        await waitForClear();
+        const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
+        if (resp?.status() === 200) {
+          const body = await resp.text();
+          // A real API response is JSON/text; an HTML doc here means a challenge page.
+          if (!/^\s*<(?:!doctype|html)/i.test(body)) return body;
+        }
+        lastErr = `status ${resp?.status() ?? "none"}`;
+      } catch (err) {
+        lastErr = err instanceof Error ? err.message : String(err);
+      }
+      await page.waitForTimeout(1500 * attempt);
+    }
+    throw new Error(`Cloudflare fetch failed for ${url}: ${lastErr}`);
+  };
+
+  // Serialize navigations — one page/tab can't be in two places at once.
+  let chain: Promise<unknown> = Promise.resolve();
+  return {
+    fetchText(url: string): Promise<string> {
+      const run = chain.then(() => doFetch(url));
+      chain = run.catch(() => undefined);
+      return run;
+    },
+    async close(): Promise<void> {
+      await browser.close().catch(() => undefined);
+    },
+  };
+}
