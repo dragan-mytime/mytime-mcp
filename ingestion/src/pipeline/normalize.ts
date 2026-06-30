@@ -47,6 +47,37 @@ export function parsePercent(v: unknown): number {
 
 export const round2 = (n: number): number => Math.round(n * 100) / 100;
 
+export type ProductType = "watches" | "jewelry" | "accessories" | "eyewear" | "other";
+
+/**
+ * Coarse, cross-vendor product type from a raw vendor category + product name,
+ * with an optional per-vendor fallback (monobrands: Pandora/Zia/Swarovski →
+ * "jewelry", Hronometar → "watches"). Eyewear is matched first so a watch
+ * store's "очила" never lands in watches. Returns null only when there is no
+ * text and no fallback, keeping "other" meaningful.
+ */
+export function normalizeType(
+  category: string | null,
+  name: string | null,
+  fallback: ProductType | null = null,
+): ProductType | null {
+  const s = `${category ?? ""} ${name ?? ""}`.toLowerCase().trim();
+  if (!s) return fallback;
+  if (/(очил|наочар|eyewear|sunglass|glasses)/.test(s)) return "eyewear";
+  if (/(часовник|\bwatch|saat|zegar)/.test(s)) return "watches";
+  if (
+    /(накит|jewel|прстен|обетк|ѓердан|гердан|огрлиц|белегз|нараквиц|приврзок|привезоц|привез|синџир|ланч|алк[аи]|алка|чокер|choker|bracelet|necklace|earring|\bring\b|pendant|charm)/.test(
+      s,
+    )
+  )
+    return "jewelry";
+  if (
+    /(додатоц|ремч|ремен|каиш|strap|манжет|cufflink|новчаник|wallet|чанта|\bbag\b|футрол)/.test(s)
+  )
+    return "accessories";
+  return fallback ?? "other";
+}
+
 /**
  * Derive the discount fields from a regular and (optional) sale price.
  * Returns nulls when there is no genuine discount (legacy stored 0 here).
