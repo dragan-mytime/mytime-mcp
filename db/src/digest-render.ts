@@ -121,7 +121,11 @@ export async function geminiNarrate(
       body: JSON.stringify({
         system_instruction: { parts: [{ text: promptBody }] },
         contents: [{ parts: [{ text: JSON.stringify(digest) }] }],
-        generationConfig: { maxOutputTokens: 2000 },
+        // gemini-2.5-flash is a thinking model: "thinking" spends output tokens
+        // before the answer, so a long prompt could exhaust a small budget on
+        // reasoning and return an empty/truncated body. Disable thinking and give
+        // the HTML email room (a full digest runs ~25k chars ≈ 8k tokens).
+        generationConfig: { maxOutputTokens: 8192, thinkingConfig: { thinkingBudget: 0 } },
       }),
       signal: AbortSignal.timeout(30_000),
     });
@@ -130,8 +134,10 @@ export async function geminiNarrate(
       candidates?: { content?: { parts?: { text?: string }[] } }[];
     };
     const text = json.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-    if (!text) return null;
-    return text.replace(/```[\w]*\n?/g, "").trim();
+    // Strip code fences; treat empty-after-strip as a failure so the caller falls
+    // back to the deterministic template instead of rendering a blank body.
+    const stripped = text.replace(/```[\w]*\n?/g, "").trim();
+    return stripped || null;
   } catch {
     return null;
   }
