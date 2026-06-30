@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import {
@@ -6,6 +7,7 @@ import {
 } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { logger, optionalEnv, type Role, requireEnv } from "@mytime/shared";
 import express from "express";
 import { adminRouter } from "./admin/router.js";
@@ -104,25 +106,68 @@ export function createApp(): express.Express {
   );
 
   // Protected MCP endpoint — 401 + WWW-Authenticate → resource metadata when unauthenticated.
+  // Stateful Streamable-HTTP sessions so tool-list changes reach clients without a manual
+  // reconnect: after a deploy the in-memory sessions are gone, the client's next call 404s,
+  // and it re-initializes → re-lists tools (sees new tools on its own). The persistent SSE
+  // stream (GET) also carries server→client notifications/tools/list_changed.
+  const transports = new Map<string, StreamableHTTPServerTransport>();
+
   app.post(
     "/mcp",
     express.json(),
     requireBearerAuth({ verifier: provider, resourceMetadataUrl }),
     async (req, res) => {
-      const server = buildMcpServer();
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      res.on("close", () => {
-        transport.close();
-        server.close();
-      });
-      try {
+      const sid = req.header("mcp-session-id");
+      const existing = sid ? transports.get(sid) : undefined;
+      if (!existing && (sid || !isInitializeRequest(req.body))) {
+        res.status(sid ? 404 : 400).json({
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "No valid session" },
+          id: null,
+        });
+        return;
+      }
+      let transport: StreamableHTTPServerTransport;
+      if (existing) {
+        transport = existing;
+      } else {
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (id) => {
+            transports.set(id, transport);
+          },
+        });
+        const server = buildMcpServer();
+        transport.onclose = () => {
+          if (transport.sessionId) transports.delete(transport.sessionId);
+          server.close();
+        };
         await server.connect(transport);
+      }
+      try {
         await transport.handleRequest(req, res, req.body);
       } catch (err) {
         logger.error({ err }, "MCP request failed");
         if (!res.headersSent) res.status(500).json({ error: "internal error" });
       }
     },
+  );
+
+  // SSE stream (server→client notifications) + explicit session teardown.
+  const sessionRequest = async (req: express.Request, res: express.Response): Promise<void> => {
+    const sid = req.header("mcp-session-id");
+    const transport = sid ? transports.get(sid) : undefined;
+    if (!transport) {
+      res.status(404).end();
+      return;
+    }
+    await transport.handleRequest(req, res);
+  };
+  app.get("/mcp", requireBearerAuth({ verifier: provider, resourceMetadataUrl }), sessionRequest);
+  app.delete(
+    "/mcp",
+    requireBearerAuth({ verifier: provider, resourceMetadataUrl }),
+    sessionRequest,
   );
 
   app.use("/admin", adminRouter());
