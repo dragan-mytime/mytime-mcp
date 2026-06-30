@@ -4,6 +4,8 @@ import {
   deriveDiscount,
   normalizeBrand,
   normalizeGender,
+  normalizeType,
+  type ProductType,
   parseModelFromName,
   toNumber,
 } from "../pipeline/normalize.js";
@@ -206,6 +208,7 @@ export function parseProduct(html: string, url: string): ProductObservation | nu
     brand,
     modelRef,
     category: cleanText(node.category),
+    productType: normalizeType(cleanText(node.category), name),
     gender: normalizeGender(node.category) ?? normalizeGender(name),
     collection: null,
     attributes: null,
@@ -236,7 +239,11 @@ function metaContent(html: string, prop: string): string | null {
 }
 
 /** Fallback parser for OpenGraph product pages (e.g. Royal House / Swarovski). */
-export function parseOg(html: string, url: string): ProductObservation | null {
+export function parseOg(
+  html: string,
+  url: string,
+  opts: { genderDefault?: string; typeDefault?: ProductType } = {},
+): ProductObservation | null {
   const ogPrice = toNumber(metaContent(html, "og:price:amount"));
   const productPrice = toNumber(metaContent(html, "product:price:amount"));
   // When og:price:amount > product:price:amount, og is the regular (list) price
@@ -270,7 +277,8 @@ export function parseOg(html: string, url: string): ProductObservation | null {
     brand: normalizeBrand(metaContent(html, "product:brand") ?? metaContent(html, "og:brand")),
     modelRef: nameCode?.toUpperCase() ?? parseModelFromName(name),
     category: null,
-    gender: normalizeGender(name),
+    productType: normalizeType(null, name, opts.typeDefault ?? null),
+    gender: normalizeGender(name) ?? opts.genderDefault ?? null,
     collection: null,
     attributes: null,
     url,
@@ -325,7 +333,11 @@ export const webJsonLdCollector: ProductCollector = {
     const results = await mapPool(urls, CONCURRENCY, async (url) => {
       try {
         const html = await fetchHtml(url);
-        return parseProduct(html, url) ?? parseOg(html, url);
+        const ogOpts =
+          target.id === "swarovski"
+            ? { genderDefault: "womens", typeDefault: "jewelry" as const }
+            : {};
+        return parseProduct(html, url) ?? parseOg(html, url, ogOpts);
       } catch {
         return null;
       }

@@ -15,7 +15,7 @@ function decodeEntities(s: string): string {
 }
 
 /** Parse Magento product cards from a server-rendered category listing page. */
-function parseListing(html: string): ProductObservation[] {
+export function parseListing(html: string): ProductObservation[] {
   const out: ProductObservation[] = [];
   // One chunk per product card.
   for (const chunk of html.split("product-item-info").slice(1)) {
@@ -36,7 +36,8 @@ function parseListing(html: string): ProductObservation[] {
       brand: "Pandora", // monobrand franchise
       modelRef: code?.toUpperCase() ?? null,
       category: null,
-      gender: null,
+      productType: "jewelry",
+      gender: "womens",
       collection: null,
       attributes: null,
       url,
