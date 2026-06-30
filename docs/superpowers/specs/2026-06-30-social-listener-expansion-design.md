@@ -10,16 +10,20 @@ MCP tool, and a dashboard "Social" tab.
 Social listening only persists **account-level aggregates** (followers, following, post count, an
 avg-engagement number) in `social_metrics`. The Instagram/TikTok collectors already **fetch recent
 posts** from Apify (per-post likes, comments, timestamps) but **discard** the content — captions,
-images, per-post engagement, and video view counts are thrown away. So we can't see *what*
-competitors post, how individual posts perform, or any reach signal. The brief's ask: posts,
-"communication" (captions), images, engagement, and reach.
+images, per-post engagement, and video view counts are thrown away. The Facebook collector goes
+further and fetches only page followers/likes — **no posts at all**, even though FB page posts are
+fully scrapable. So we can't see *what* competitors post, how individual posts perform, or any reach
+signal. The brief's ask: posts, "communication" (captions), images, engagement, and reach.
 
 ## Solution
 
 Persist and surface **per-post** social content + engagement, with a **$0 estimated reach** labeled
 by source. No paid provider (Apify has no organic-reach mechanism; paid tools only model reach from
-the same public signals). Instagram + TikTok are first-class; Facebook is best-effort (thin public
-post data); own-brand keeps real numbers via the official Graph API.
+the same public signals). **Instagram, TikTok, and Facebook are all first-class** — each has an
+Apify scraper that returns post content + engagement (the FB page posts scraper exposes text,
+reactions, comments, shares, and media, just like IG/TikTok). Own-brand keeps real reach via the
+official Graph API. For local MK competitors, Facebook is often the *primary* channel, so it is not
+treated as a second-class platform.
 
 ### 1. Data model
 
@@ -85,8 +89,13 @@ A pure helper in a shared social module:
   account metrics + add `avg_engagement_rate`.
 - `tiktok.ts`: same, from the TikTok actor's video items (views/plays, diggCount, commentCount,
   shareCount, cover image, desc, createTime).
-- `facebook.ts`: best-effort — map whatever public post fields the actor returns; if none, emit no
-  posts (account metrics only).
+- `facebook.ts`: upgrade from the page-only `facebook-pages-scraper` (followers/likes) to also
+  fetch page **posts** via `apify~facebook-posts-scraper` (one call per run, batched start URLs).
+  Map each post: `message`→caption, `url`→permalink, total reactions (like+love+wow+haha+sad+angry)
+  →`likes`, comment count→`comments`, share count→`shares`, media image/video-thumbnail→`mediaUrl`/
+  `mediaUrls`, `video` flag→`postType` (video|image), `timestamp`→`postedAt`, and video view count
+  →`views` when present. Keep emitting the existing page follower/like metrics. Reach for FB posts
+  uses `views` when a video exposes them, else the followers×benchmark estimate.
 - `meta-own.ts` (own brand): add own posts via the Graph API where available, with **real** reach/
   impressions from insights (`reachSource = "measured"`); follower metrics unchanged. Existing ad
   reach (Ad Library ranges) stays in `ad_observations` and is woven into the dashboard separately —
@@ -117,18 +126,19 @@ social orchestrator (`social/index.ts`) calls `ensureSocialAccount` (exists) the
 
 ## Testing
 
-- Unit: `estimateReach` (views vs follower-benchmark vs null-followers) + the IG/TikTok post
-  mappers (fixture actor items → `SocialPostObservation` with correct engagement/reach/source).
+- Unit: `estimateReach` (views vs follower-benchmark vs null-followers) + the IG / TikTok / FB post
+  mappers (fixture actor items → `SocialPostObservation` with correct engagement/reach/source;
+  FB-specific: total-reactions→likes summing across reaction types).
 - Writer: upsert refreshes engagement on a second run (no duplicate rows).
 - Collector tests use saved Apify-response fixtures (no live Apify in tests).
-- **Live verification:** run the IG + TikTok collectors for the competitors, confirm `social_posts`
-  populates (captions, media, views where expected, reach labeled by source); call `social_posts`
-  and load the dashboard Social tab. `pnpm -r build` + tests + Biome clean.
+- **Live verification:** run the IG + TikTok + FB collectors for the competitors, confirm
+  `social_posts` populates (captions, media, views where expected, reach labeled by source); call
+  `social_posts` and load the dashboard Social tab. `pnpm -r build` + tests + Biome clean.
 
 ## Success criteria
 
-1. `social_posts` persists per-post content + engagement for IG/TikTok competitors (FB best-effort,
-   own-brand with real reach); re-scrapes upsert, no duplicates.
+1. `social_posts` persists per-post content + engagement for Instagram, TikTok, and Facebook
+   competitors (own-brand with real reach); re-scrapes upsert, no duplicates.
 2. Every post carries an `estimated_reach` + `reach_source` (`views` where public, else `estimate`).
 3. `social_posts` MCP tool + dashboard Social tab show captions, media, engagement, and labeled
    reach per competitor. Build + tests + Biome clean; no regression to existing social metrics.
