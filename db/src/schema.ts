@@ -275,6 +275,29 @@ export const appSettings = pgTable("app_settings", {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// OAuth persistence: DCR clients + refresh tokens survive process restarts so the
+// MCP connector doesn't force a re-auth on every deploy. Access tokens are
+// stateless JWTs (stable MCP_JWT_SECRET) and already survive; only these two
+// long-lived pieces lived in memory. Auth codes / pending logins stay in memory
+// (<=10 min, only relevant mid-handshake).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const oauthClients = pgTable("oauth_clients", {
+  clientId: text("client_id").primaryKey(),
+  client: jsonb("client").notNull(), // full OAuthClientInformationFull
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const oauthRefreshTokens = pgTable("oauth_refresh_tokens", {
+  tokenHash: text("token_hash").primaryKey(), // sha256(refresh_token) — never the raw token
+  email: text("email").notNull(),
+  role: text("role").notNull(),
+  clientId: text("client_id").notNull(),
+  scopes: jsonb("scopes").notNull(), // string[]
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Digest Studio: authorable prompts + schedulers (Subsystem E)
 // ─────────────────────────────────────────────────────────────────────────────
 

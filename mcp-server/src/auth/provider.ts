@@ -39,14 +39,14 @@ const nowSec = (): number => Math.floor(Date.now() / 1000);
  */
 export function createMyTimeProvider(pool: Pool): OAuthServerProvider {
   const clientsStore: OAuthRegisteredClientsStore = {
-    getClient: (id) => getClient(id),
-    registerClient: (client) => {
+    getClient: (id) => getClient(pool, id),
+    registerClient: async (client) => {
       const full: OAuthClientInformationFull = {
         ...client,
         client_id: randomToken(),
         client_id_issued_at: nowSec(),
       };
-      putClient(full);
+      await putClient(pool, full);
       return full;
     },
   };
@@ -97,7 +97,7 @@ export function createMyTimeProvider(pool: Pool): OAuthServerProvider {
         scopes: c.scopes,
       });
       const refreshToken = randomToken();
-      putRefresh(refreshToken, {
+      await putRefresh(pool, refreshToken, {
         email: c.email,
         role: c.role,
         clientId: client.client_id,
@@ -117,12 +117,12 @@ export function createMyTimeProvider(pool: Pool): OAuthServerProvider {
       refreshToken: string,
       scopes?: string[],
     ): Promise<OAuthTokens> {
-      const rec = getRefresh(refreshToken);
+      const rec = await getRefresh(pool, refreshToken);
       if (!rec || rec.clientId !== client.client_id) throw new Error("invalid_grant");
       // Re-check the whitelist so deactivations / role changes take effect on refresh.
       const u = await lookupAuthorizedUser(pool, rec.email);
       if (!u || !u.active) {
-        deleteRefresh(refreshToken);
+        await deleteRefresh(pool, refreshToken);
         throw new Error("invalid_grant");
       }
       const effScopes = scopes ?? rec.scopes;
@@ -148,7 +148,7 @@ export function createMyTimeProvider(pool: Pool): OAuthServerProvider {
       _client: OAuthClientInformationFull,
       request: OAuthTokenRevocationRequest,
     ): Promise<void> {
-      if (request.token) deleteRefresh(request.token);
+      if (request.token) await deleteRefresh(pool, request.token);
     },
   };
 }
