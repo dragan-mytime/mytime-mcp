@@ -275,14 +275,41 @@ const DASH_JS = String.raw`
       }).join('')+'</tbody></table></div>'; }
     var mini='<div class="miniwrap">'+miniTable(brands,'Most-discounted brands')+miniTable(cats,'Most-discounted categories')+'</div>';
 
-    var rows=items.slice(0,400).map(function(d){
-      return '<tr><td class="l nm">'+esc(d.name)+'</td><td class="l">'+esc(d.brand||'—')+'</td><td class="l">'+esc(d.category||'—')+'</td>'
-        +'<td>'+fmt(d.reg)+'</td><td>'+fmt(d.sale)+'</td><td><span class="badge-off">-'+Math.round(d.pct||0)+'%</span></td></tr>';
-    }).join('');
-    var tbl='<div class="h3">On-sale items ('+items.length+')</div><table class="dt"><thead><tr>'
-      +'<th class="l">Product</th><th class="l">Brand</th><th class="l">Category</th><th>Was</th><th>Now</th><th>Off</th></tr></thead><tbody>'
-      +(rows||'<tr><td class="l" colspan="6">No discounts.</td></tr>')+'</tbody></table>';
-    document.getElementById('panel-discounts').innerHTML=mini+tbl;
+    // Brand options (present in the current competitor filter) + a high-level category group.
+    var brandList=[], seenB={};
+    items.forEach(function(d){ if(d.brand && !seenB[d.brand]){ seenB[d.brand]=1; brandList.push(d.brand); } });
+    brandList.sort(function(a,b){ return a.localeCompare(b); });
+    var fbar='<div class="filters">'
+      +'<select id="f-brand"><option value="">All brands ('+brandList.length+')</option>'
+      +brandList.map(function(b){ return '<option>'+esc(b)+'</option>'; }).join('')+'</select>'
+      +'<select id="f-group"><option value="">All categories</option><option>Watches</option>'
+      +'<option>Jewelry</option><option>Accessories</option><option>Other</option></select></div>';
+    document.getElementById('panel-discounts').innerHTML=
+      mini+fbar+'<div class="h3" id="disc-count"></div><div id="disc-items"></div>';
+    function drawItems(){
+      var fb=document.getElementById('f-brand').value, fg=document.getElementById('f-group').value;
+      var list=items.filter(function(d){ return (!fb||d.brand===fb) && (!fg||groupOf(d.category,d.name)===fg); });
+      document.getElementById('disc-count').textContent='On-sale items ('+list.length+')';
+      var rows=list.slice(0,400).map(function(d){
+        return '<tr><td class="l nm">'+esc(d.name)+'</td><td class="l">'+esc(d.brand||'—')+'</td><td class="l">'+esc(d.category||'—')+'</td>'
+          +'<td>'+fmt(d.reg)+'</td><td>'+fmt(d.sale)+'</td><td><span class="badge-off">-'+Math.round(d.pct||0)+'%</span></td></tr>';
+      }).join('');
+      document.getElementById('disc-items').innerHTML='<table class="dt"><thead><tr>'
+        +'<th class="l">Product</th><th class="l">Brand</th><th class="l">Category</th><th>Was</th><th>Now</th><th>Off</th></tr></thead><tbody>'
+        +(rows||'<tr><td class="l" colspan="6">No items match.</td></tr>')+'</tbody></table>';
+    }
+    document.getElementById('f-brand').onchange=drawItems;
+    document.getElementById('f-group').onchange=drawItems;
+    drawItems();
+  }
+
+  // High-level category classifier — raw categories are granular & Macedonian.
+  function groupOf(cat,name){
+    var s=((cat||'')+' '+(name||'')).toLowerCase();
+    if(/часовник|\bwatch/.test(s)) return 'Watches';
+    if(/накит|прстен|обетк|ѓердан|белегз|приврзок|синџир|алк[аи]|jewel|ring|necklace|bracelet|earring|pendant|chain/.test(s)) return 'Jewelry';
+    if(/ремен|ремч|каиш|strap|band|додаток|додатоци|accessor|кутиј|пишување|пенкало/.test(s)) return 'Accessories';
+    return 'Other';
   }
 
   function renderAds(){
