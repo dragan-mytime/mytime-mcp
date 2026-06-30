@@ -4,6 +4,7 @@ import {
   deriveDiscount,
   normalizeGender,
   normalizeType,
+  parseModelRef,
 } from "../pipeline/normalize.js";
 import type { CollectorContext, ProductCollector } from "./_collector.js";
 
@@ -42,7 +43,7 @@ export function map(it: ZiaItem, base: string): ProductObservation {
     externalId: it._id,
     name: name ?? it._id,
     brand: "Zia",
-    modelRef: name,
+    modelRef: parseModelRef(name, null, null),
     category: cleanText(it.category?.name),
     productType: normalizeType(it.category?.name ?? null, name, "jewelry"),
     gender: normalizeGender(it.category?.name) ?? normalizeGender(name) ?? "womens",

@@ -1,7 +1,8 @@
-import { z } from "zod";
 import { dailyDigest } from "@mytime/db";
+import { z } from "zod";
 import {
   compareMarketShare,
+  compareSkus,
   competitorAds,
   inventoryVelocity,
   priceAssortment,
@@ -62,6 +63,20 @@ export const tools: McpToolDef[] = [
         .describe("velocity window in days (default 30)"),
     },
     run: (pool, a) => compareMarketShare(pool, a as { competitor: string; days?: number }),
+  },
+  {
+    name: "compare_skus",
+    title: "SKU overlap & price comparison (MY:TIME vs a competitor)",
+    description:
+      "Match MY:TIME products to a competitor on the manufacturer reference and compare current prices, per matched SKU. Casio matches the Timeless/Vintage lines (not G-Shock). Returns match counts (who is cheaper) + the line items with both prices and the % difference.",
+    requiredRole: "analyst",
+    inputSchema: {
+      competitor: z
+        .string()
+        .optional()
+        .describe("competitor target id, e.g. 'saat-saat'; omit for all competitors"),
+    },
+    run: (pool, a) => compareSkus(pool, a as { competitor?: string }),
   },
   {
     name: "social_benchmark",

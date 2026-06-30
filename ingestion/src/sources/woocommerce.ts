@@ -5,6 +5,7 @@ import {
   normalizeBrand,
   normalizeGender,
   normalizeType,
+  parseModelRef,
 } from "../pipeline/normalize.js";
 import type { CollectorContext, ProductCollector } from "./_collector.js";
 import { type CloudflareSession, openCloudflareSession } from "./browser-fetch.js";
@@ -213,7 +214,7 @@ export function mapProduct(p: WcProduct): ProductObservation {
     externalId: String(p.sku || p.id),
     name: cleanText(p.name) ?? String(p.id),
     brand,
-    modelRef: p.slug ? p.slug.toUpperCase() : null,
+    modelRef: parseModelRef(cleanText(p.name), cleanText(p.sku), cleanText(p.slug)),
     category,
     productType: normalizeType(category, cleanText(p.name)),
     gender: normalizeGender(genderTerm) ?? normalizeGender(category),

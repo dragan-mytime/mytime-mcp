@@ -316,3 +316,79 @@ export async function priceAssortment(pool: Pool, opts: { competitor?: string; b
   );
   return { currency: "MKD", filters: { competitor: opts.competitor, brand: opts.brand }, rows };
 }
+
+interface SkuMatchRow {
+  target_id: string;
+  key: string;
+  mt_name: string;
+  comp_name: string;
+  mt_price: number;
+  comp_price: number;
+  mt_vs_comp_pct: number | null;
+}
+
+/**
+ * Match MY:TIME products to a competitor on the normalized manufacturer reference
+ * (model_ref stripped to uppercase alphanumerics, ≥5 chars), brand-compatible, and
+ * Casio-correct (Timeless/Vintage collapse to CASIO; G-Shock never matches a
+ * non-G-Shock). Compares the latest effective price (sale ?? regular) on each side.
+ */
+export async function compareSkus(pool: Pool, opts: { competitor?: string }) {
+  const { rows } = await pool.query<SkuMatchRow>(
+    `WITH latest AS (
+       SELECT DISTINCT ON (product_id) product_id, COALESCE(sale_price, price)::float8 AS eff
+       FROM prices ORDER BY product_id, captured_date DESC
+     ),
+     norm AS (
+       SELECT t.is_self, p.target_id,
+         regexp_replace(upper(p.model_ref), '[^A-Z0-9]', '', 'g') AS key,
+         p.name, l.eff,
+         CASE WHEN upper(coalesce(p.brand,'')) LIKE 'CASIO%' THEN 'CASIO'
+              ELSE upper(coalesce(p.brand,'')) END AS bkey,
+         (upper(coalesce(p.brand,'') || ' ' || p.name) ~ 'G[ -]?SHOCK') AS gshock
+       FROM products p JOIN targets t ON t.id = p.target_id
+       JOIN latest l ON l.product_id = p.id
+       WHERE p.active AND p.model_ref IS NOT NULL
+         AND length(regexp_replace(upper(p.model_ref),'[^A-Z0-9]','','g')) >= 5
+     ),
+     mt AS (
+       SELECT key, max(name) AS name, max(bkey) AS bkey, bool_or(gshock) AS gshock, min(eff) AS eff
+       FROM norm WHERE is_self GROUP BY key
+     ),
+     comp AS (
+       SELECT target_id, key, max(name) AS name, max(bkey) AS bkey, bool_or(gshock) AS gshock, min(eff) AS eff
+       FROM norm WHERE NOT is_self GROUP BY target_id, key
+     )
+     SELECT comp.target_id, mt.key, mt.name AS mt_name, comp.name AS comp_name,
+       mt.eff AS mt_price, comp.eff AS comp_price,
+       round(100.0*(comp.eff - mt.eff)/NULLIF(comp.eff,0)) AS mt_vs_comp_pct
+     FROM mt JOIN comp ON comp.key = mt.key
+       AND (mt.bkey = comp.bkey OR mt.bkey = '' OR comp.bkey = '')
+       AND mt.gshock = comp.gshock
+     WHERE ($1::text IS NULL OR comp.target_id = $1)
+     ORDER BY comp.target_id, abs(mt.eff - comp.eff) DESC`,
+    [opts.competitor ?? null],
+  );
+
+  const byComp = new Map<string, SkuMatchRow[]>();
+  for (const r of rows) {
+    const list = byComp.get(r.target_id) ?? [];
+    list.push(r);
+    byComp.set(r.target_id, list);
+  }
+  const results = [...byComp.entries()].map(([competitor, items]) => ({
+    competitor,
+    matches: items.length,
+    mytimeCheaper: items.filter((r) => r.mt_price < r.comp_price).length,
+    competitorCheaper: items.filter((r) => r.mt_price > r.comp_price).length,
+    same: items.filter((r) => r.mt_price === r.comp_price).length,
+    items: items.slice(0, 50).map((r) => ({
+      ref: r.key,
+      mtName: r.mt_name,
+      mytime: Math.round(r.mt_price),
+      competitor: Math.round(r.comp_price),
+      deltaPct: r.mt_vs_comp_pct,
+    })),
+  }));
+  return { comparedAt: new Date().toISOString().slice(0, 10), currency: "MKD", results };
+}

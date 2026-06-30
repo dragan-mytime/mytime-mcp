@@ -81,3 +81,20 @@ describe("mapProduct gender + product type", () => {
     expect(o.gender ?? null).toBeNull();
   });
 });
+
+describe("mapProduct model_ref", () => {
+  it("uses the sku when it is a real reference (Bozinovski)", () => {
+    const o = mapProduct(wc({ name: "CARSON", sku: "H76615130", slug: "carson-4" }) as never);
+    expect(o.modelRef).toBe("H76615130");
+  });
+  it("extracts the code from the name when sku is a numeric id (Watch Club)", () => {
+    const o = mapProduct(
+      wc({
+        name: "PIERRE CARDIN CF.1019.LB.1",
+        sku: "39027",
+        slug: "pierre-cardin-cf-1019-lb-1",
+      }) as never,
+    );
+    expect(o.modelRef).toBe("CF.1019.LB.1");
+  });
+});

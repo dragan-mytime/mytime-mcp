@@ -4,6 +4,7 @@ import {
   deriveDiscount,
   normalizeGender,
   normalizeType,
+  parseModelRef,
 } from "../pipeline/normalize.js";
 import type { CollectorContext, ProductCollector } from "./_collector.js";
 
@@ -90,7 +91,7 @@ export function parseNop(html: string, url: string): ProductObservation | null {
     externalId: id ?? url.split("/").filter(Boolean).pop() ?? url,
     name,
     brand: null,
-    modelRef: code?.toUpperCase() ?? null,
+    modelRef: parseModelRef(name, code, null),
     category: null,
     productType: normalizeType(null, name, "watches"),
     gender: normalizeGender(specValue(html, "Пол")) ?? normalizeGender(name),
