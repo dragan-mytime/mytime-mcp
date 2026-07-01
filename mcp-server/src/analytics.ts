@@ -126,6 +126,42 @@ export async function compareMarketShare(pool: Pool, opts: { competitor: string;
 /** social_benchmark — latest public social metrics, brand vs competitors. */
 export async function socialBenchmark(pool: Pool, opts: { platform?: string; metric?: string }) {
   const metric = opts.metric ?? "followers";
+
+  if (metric === "engagement" || metric === "cadence") {
+    const p: unknown[] = [];
+    let pf = "";
+    if (opts.platform) {
+      p.push(opts.platform);
+      pf = `AND sa.platform = $${p.length}::social_platform`;
+    }
+    const { rows } = await pool.query(
+      `SELECT t.id AS target_id, sa.platform,
+              count(*)::int AS posts_in_window,
+              round(avg(sp.engagement)) AS avg_engagement,
+              round(avg(100.0 * sp.engagement / NULLIF(fol.followers,0)), 2) AS avg_engagement_rate
+       FROM social_posts sp
+       JOIN social_accounts sa ON sa.id = sp.social_account_id
+       JOIN targets t ON t.id = sa.target_id
+       LEFT JOIN LATERAL (
+         SELECT value::numeric AS followers FROM social_metrics sm
+         WHERE sm.social_account_id = sa.id AND sm.metric = 'followers'
+         ORDER BY sm.captured_date DESC LIMIT 1
+       ) fol ON true
+       WHERE sp.posted_at >= now() - interval '30 days' ${pf}
+       GROUP BY t.id, sa.platform ORDER BY t.id, sa.platform`,
+      p,
+    );
+    return {
+      metric,
+      platform: opts.platform ?? "all",
+      note:
+        metric === "cadence"
+          ? "Posts per target×platform in the last 30 days (posting cadence), incl. MY:TIME."
+          : "Avg engagement + engagementRate (engagement÷followers) per target×platform, last 30 days, incl. MY:TIME. Prefer engagementRate for cross-comparison.",
+      rows,
+    };
+  }
+
   const params: unknown[] = [metric];
   let platformFilter = "";
   if (opts.platform) {
@@ -144,7 +180,7 @@ export async function socialBenchmark(pool: Pool, opts: { platform?: string; met
   return {
     metric,
     platform: opts.platform ?? "all",
-    note: "Competitor social = public metrics only. MY:TIME own-brand metrics arrive with Step F (official APIs).",
+    note: "Latest social metrics per target×platform (own-brand + competitors).",
     rows,
   };
 }
@@ -304,6 +340,8 @@ interface SocialPostQueryRow {
   posts_in_window: string;
   avg_engagement: string | null;
   avg_reach: string | null;
+  engagement_rate: string | null;
+  avg_engagement_rate: string | null;
 }
 
 /**
@@ -317,7 +355,7 @@ export async function socialPosts(
   const days = opts.days ?? 30;
   const limit = Math.min(opts.limit ?? 20, 50);
   const params: unknown[] = [days];
-  const conds = ["sp.posted_at >= now() - ($1 || ' days')::interval", "t.is_self = false"];
+  const conds = ["sp.posted_at >= now() - ($1 || ' days')::interval"];
   if (opts.competitor) {
     params.push(opts.competitor);
     conds.push(`t.id = $${params.length}`);
@@ -334,10 +372,17 @@ export async function socialPosts(
               row_number() OVER (PARTITION BY t.id ORDER BY sp.engagement DESC NULLS LAST) AS rn,
               count(*) OVER (PARTITION BY t.id) AS posts_in_window,
               round(avg(sp.engagement) OVER (PARTITION BY t.id)) AS avg_engagement,
-              round(avg(sp.estimated_reach) OVER (PARTITION BY t.id)) AS avg_reach
+              round(avg(sp.estimated_reach) OVER (PARTITION BY t.id)) AS avg_reach,
+              round(100.0 * sp.engagement / NULLIF(f.followers,0), 2) AS engagement_rate,
+              round(avg(100.0 * sp.engagement / NULLIF(f.followers,0)) OVER (PARTITION BY t.id), 2) AS avg_engagement_rate
        FROM social_posts sp
        JOIN social_accounts sa ON sa.id = sp.social_account_id
        JOIN targets t ON t.id = sa.target_id
+       LEFT JOIN LATERAL (
+         SELECT value::numeric AS followers FROM social_metrics sm
+         WHERE sm.social_account_id = sa.id AND sm.metric = 'followers'
+         ORDER BY sm.captured_date DESC LIMIT 1
+       ) f ON true
        WHERE ${conds.join(" AND ")}
      )
      SELECT * FROM ranked WHERE rn <= ${limit} ORDER BY competitor, engagement DESC NULLS LAST`,
@@ -351,6 +396,7 @@ export async function socialPosts(
       postsInWindow: number;
       avgEngagement: number | null;
       avgReach: number | null;
+      avgEngagementRate: number | null;
       posts: unknown[];
     }
   >();
@@ -360,6 +406,7 @@ export async function socialPosts(
       postsInWindow: Number(r.posts_in_window),
       avgEngagement: r.avg_engagement === null ? null : Number(r.avg_engagement),
       avgReach: r.avg_reach === null ? null : Number(r.avg_reach),
+      avgEngagementRate: r.avg_engagement_rate === null ? null : Number(r.avg_engagement_rate),
       posts: [],
     };
     g.posts.push({
@@ -375,6 +422,7 @@ export async function socialPosts(
       engagement: r.engagement,
       estimatedReach: r.estimated_reach,
       reachSource: r.reach_source,
+      engagementRate: r.engagement_rate === null ? null : Number(r.engagement_rate),
       postedAt: r.posted_at,
     });
     byComp.set(r.competitor, g);
@@ -382,7 +430,7 @@ export async function socialPosts(
   return {
     windowDays: days,
     reachNote:
-      "Reach is 'views' (measured), 'estimate' (followers×benchmark), or 'measured' (own-brand insights).",
+      "Compare on engagementRate (engagement ÷ followers). Reach is labeled by source: 'views' or 'estimate' for competitors, 'measured' or 'estimate' for MY:TIME (measured once Meta insights permission is granted).",
     results: [...byComp.values()],
   };
 }

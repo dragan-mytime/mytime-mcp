@@ -5,6 +5,7 @@ import {
   type SocialPlatform,
   type SocialPostObservation,
 } from "@mytime/shared";
+import { estimateReach } from "./reach.js";
 
 const GRAPH = "https://graph.facebook.com/v23.0";
 
@@ -28,6 +29,90 @@ async function graphInsight(mediaId: string, metric: string): Promise<number | n
   };
   if (json.error) return null;
   return json.data?.[0]?.values?.[0]?.value ?? null;
+}
+
+/** Like graphInsight but returns the value as an OBJECT (e.g. post_activity_by_action_type). */
+async function graphInsightObj(id: string, metric: string): Promise<Record<string, number> | null> {
+  const token = requireEnv("META_ACCESS_TOKEN");
+  const url = `${GRAPH}/${id}/insights?metric=${metric}&access_token=${encodeURIComponent(token)}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  const json = (await res.json()) as {
+    data?: { values?: { value?: unknown }[] }[];
+    error?: unknown;
+  };
+  if (json.error) return null;
+  const v = json.data?.[0]?.values?.[0]?.value;
+  return v && typeof v === "object" ? (v as Record<string, number>) : null;
+}
+
+/** FB organic engagement from post_activity_by_action_type → the competitor field shape. */
+export function mapFbActions(
+  acts: Record<string, number>,
+  followers: number | null,
+): {
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+  engagement: number | null;
+  estimatedReach: number | null;
+  reachSource: string | null;
+} {
+  const g = (k: string) => (typeof acts[k] === "number" ? acts[k] : null);
+  const likes = g("like");
+  const comments = g("comment");
+  const shares = g("share");
+  const engagement =
+    likes === null && comments === null && shares === null
+      ? null
+      : (likes ?? 0) + (comments ?? 0) + (shares ?? 0);
+  const { reach, source } = estimateReach("facebook", null, followers); // FB post reach retired in v23
+  return { likes, comments, shares, engagement, estimatedReach: reach, reachSource: source };
+}
+
+/** IG own post: measured reach when insights are permitted, else the followers-benchmark estimate. */
+export function mapIgOwnPost(
+  post: {
+    id: string;
+    caption?: string;
+    media_type?: string;
+    media_url?: string;
+    thumbnail_url?: string;
+    permalink?: string;
+    timestamp?: string;
+    like_count?: number;
+    comments_count?: number;
+  },
+  ins: { reach: number | null; views: number | null; shares: number | null },
+  followers: number | null,
+): SocialPostObservation {
+  const likes = typeof post.like_count === "number" ? post.like_count : null;
+  const comments = typeof post.comments_count === "number" ? post.comments_count : null;
+  const shares = ins.shares;
+  const isVideo = String(post.media_type ?? "")
+    .toUpperCase()
+    .includes("VIDEO");
+  const engagement =
+    likes === null && comments === null && shares === null
+      ? null
+      : (likes ?? 0) + (comments ?? 0) + (shares ?? 0);
+  const measured = ins.reach != null;
+  const est = estimateReach("instagram", ins.views, followers);
+  return {
+    externalPostId: String(post.id),
+    postedAt: post.timestamp ?? null,
+    postType: isVideo ? "video" : "image",
+    caption: post.caption ?? null,
+    permalink: post.permalink ?? null,
+    mediaUrl: post.media_url ?? post.thumbnail_url ?? null,
+    mediaUrls: null,
+    likes,
+    comments,
+    shares,
+    views: ins.views,
+    engagement,
+    estimatedReach: measured ? ins.reach : est.reach,
+    reachSource: measured ? "measured" : est.source,
+  };
 }
 
 export interface OwnBrandSocialResult {
@@ -54,6 +139,7 @@ export async function collectOwnBrandMeta(): Promise<OwnBrandSocialResult[]> {
     if (typeof ig.follows_count === "number")
       m.push({ metric: "following", value: ig.follows_count });
     if (typeof ig.media_count === "number") m.push({ metric: "posts", value: ig.media_count });
+    const igFollowers = typeof ig.followers_count === "number" ? ig.followers_count : null;
     const posts: SocialPostObservation[] = [];
     try {
       const mediaRes = await graphGet(
@@ -64,28 +150,12 @@ export async function collectOwnBrandMeta(): Promise<OwnBrandSocialResult[]> {
         ? (mediaRes as { data: Record<string, unknown>[] }).data.slice(0, 25)
         : [];
       for (const post of media) {
-        const reach = await graphInsight(String(post.id), "reach");
-        const likes = typeof post.like_count === "number" ? post.like_count : null;
-        const comments = typeof post.comments_count === "number" ? post.comments_count : null;
-        const isVideo = String(post.media_type ?? "")
-          .toUpperCase()
-          .includes("VIDEO");
-        posts.push({
-          externalPostId: String(post.id),
-          postedAt: (post.timestamp as string) ?? null,
-          postType: isVideo ? "video" : "image",
-          caption: (post.caption as string) ?? null,
-          permalink: (post.permalink as string) ?? null,
-          mediaUrl: (post.media_url as string) ?? (post.thumbnail_url as string) ?? null,
-          mediaUrls: null,
-          likes,
-          comments,
-          shares: null,
-          views: null,
-          engagement: likes === null && comments === null ? null : (likes ?? 0) + (comments ?? 0),
-          estimatedReach: reach,
-          reachSource: reach != null ? "measured" : null,
-        });
+        const ins = {
+          reach: await graphInsight(String(post.id), "reach"),
+          views: await graphInsight(String(post.id), "views"),
+          shares: await graphInsight(String(post.id), "shares"),
+        };
+        posts.push(mapIgOwnPost(post as never, ins, igFollowers));
       }
     } catch {
       // media/insights unavailable for some accounts/media types — metrics still write.
@@ -100,7 +170,40 @@ export async function collectOwnBrandMeta(): Promise<OwnBrandSocialResult[]> {
     if (typeof fb.followers_count === "number")
       m.push({ metric: "followers", value: fb.followers_count });
     if (typeof fb.fan_count === "number") m.push({ metric: "likes", value: fb.fan_count });
-    if (m.length) out.push({ platform: "facebook", metrics: m });
+    const fbPosts: SocialPostObservation[] = [];
+    try {
+      const res = await graphGet(
+        `${pageId}/published_posts`,
+        "id,message,created_time,permalink_url,full_picture",
+      );
+      const items = Array.isArray((res as { data?: unknown[] }).data)
+        ? (res as { data: Record<string, unknown>[] }).data.slice(0, 25)
+        : [];
+      const fbFollowers = typeof fb.followers_count === "number" ? fb.followers_count : null;
+      for (const post of items) {
+        const acts = (await graphInsightObj(String(post.id), "post_activity_by_action_type")) ?? {};
+        const e = mapFbActions(acts, fbFollowers);
+        fbPosts.push({
+          externalPostId: String(post.id),
+          postedAt: (post.created_time as string) ?? null,
+          postType: "image",
+          caption: (post.message as string) ?? null,
+          permalink: (post.permalink_url as string) ?? null,
+          mediaUrl: (post.full_picture as string) ?? null,
+          mediaUrls: null,
+          likes: e.likes,
+          comments: e.comments,
+          shares: e.shares,
+          views: null,
+          engagement: e.engagement,
+          estimatedReach: e.estimatedReach,
+          reachSource: e.reachSource,
+        });
+      }
+    } catch {
+      // published_posts/insights unavailable — page metrics still write.
+    }
+    if (m.length || fbPosts.length) out.push({ platform: "facebook", metrics: m, posts: fbPosts });
   }
 
   return out;
