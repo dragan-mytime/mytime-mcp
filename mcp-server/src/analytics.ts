@@ -126,6 +126,42 @@ export async function compareMarketShare(pool: Pool, opts: { competitor: string;
 /** social_benchmark — latest public social metrics, brand vs competitors. */
 export async function socialBenchmark(pool: Pool, opts: { platform?: string; metric?: string }) {
   const metric = opts.metric ?? "followers";
+
+  if (metric === "engagement" || metric === "cadence") {
+    const p: unknown[] = [];
+    let pf = "";
+    if (opts.platform) {
+      p.push(opts.platform);
+      pf = `AND sa.platform = $${p.length}::social_platform`;
+    }
+    const { rows } = await pool.query(
+      `SELECT t.id AS target_id, sa.platform,
+              count(*)::int AS posts_in_window,
+              round(avg(sp.engagement)) AS avg_engagement,
+              round(avg(100.0 * sp.engagement / NULLIF(fol.followers,0)), 2) AS avg_engagement_rate
+       FROM social_posts sp
+       JOIN social_accounts sa ON sa.id = sp.social_account_id
+       JOIN targets t ON t.id = sa.target_id
+       LEFT JOIN LATERAL (
+         SELECT value::numeric AS followers FROM social_metrics sm
+         WHERE sm.social_account_id = sa.id AND sm.metric = 'followers'
+         ORDER BY sm.captured_date DESC LIMIT 1
+       ) fol ON true
+       WHERE sp.posted_at >= now() - interval '30 days' ${pf}
+       GROUP BY t.id, sa.platform ORDER BY t.id, sa.platform`,
+      p,
+    );
+    return {
+      metric,
+      platform: opts.platform ?? "all",
+      note:
+        metric === "cadence"
+          ? "Posts per target×platform in the last 30 days (posting cadence), incl. MY:TIME."
+          : "Avg engagement + engagementRate (engagement÷followers) per target×platform, last 30 days, incl. MY:TIME. Prefer engagementRate for cross-comparison.",
+      rows,
+    };
+  }
+
   const params: unknown[] = [metric];
   let platformFilter = "";
   if (opts.platform) {
@@ -144,7 +180,7 @@ export async function socialBenchmark(pool: Pool, opts: { platform?: string; met
   return {
     metric,
     platform: opts.platform ?? "all",
-    note: "Competitor social = public metrics only. MY:TIME own-brand metrics arrive with Step F (official APIs).",
+    note: "Latest social metrics per target×platform (own-brand + competitors).",
     rows,
   };
 }
