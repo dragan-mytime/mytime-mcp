@@ -1,5 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { normalizeType } from "../src/pipeline/normalize.js";
+import { normalizeGender, normalizeType } from "../src/pipeline/normalize.js";
+
+describe("normalizeGender", () => {
+  it("maps Macedonian men's labels, including the маж root", () => {
+    expect(normalizeGender("мажи")).toBe("mens");
+    expect(normalizeGender("машки")).toBe("mens");
+    expect(normalizeGender("Маж")).toBe("mens");
+  });
+  it("maps Macedonian women's labels (жен branch still wins)", () => {
+    expect(normalizeGender("женски")).toBe("womens");
+    expect(normalizeGender("жени")).toBe("womens");
+  });
+  it("maps unisex and kids", () => {
+    expect(normalizeGender("унисекс")).toBe("unisex");
+    expect(normalizeGender("детски")).toBe("kids");
+  });
+  it("returns null for empty or unknown labels", () => {
+    expect(normalizeGender(null)).toBeNull();
+    expect(normalizeGender("часовници")).toBeNull();
+  });
+});
 
 describe("normalizeType", () => {
   it("classifies watches from MK category", () => {

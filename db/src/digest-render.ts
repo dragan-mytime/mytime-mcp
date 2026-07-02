@@ -1,5 +1,5 @@
 import { optionalEnv } from "@mytime/shared";
-import type { CompetitorDigest, DigestResult } from "./digest.js";
+import type { CompetitorDigest, DigestResult, FreshnessInfo } from "./digest.js";
 
 const MODEL = "gemini-2.5-flash";
 
@@ -29,7 +29,18 @@ function competitorBlock(c: CompetitorDigest, lang: "en" | "mk"): string {
   const newProductsLabel = isEn ? "New products" : "Нови производи";
   const stockoutsLabel = isEn ? "New stockouts" : "Ново без залихи";
   const priceMovesLabel = isEn ? "Price moves (>5%)" : "Промени на цени (>5%)";
+  const undercutsLabel = isEn ? "Price undercuts" : "Пониски цени од нашите";
+  const newlyUndercutLabel = isEn ? "Newly undercut" : "Ново подбиени";
+  const resolvedLabel = isEn ? "Resolved" : "Разрешени";
   const noDataLabel = isEn ? "none" : "нема";
+
+  // E3: a stale collector family means zeros are "no fresh data", not inactivity.
+  const staleLine = (f: FreshnessInfo) => {
+    const since = f.lastSuccessAt ? f.lastSuccessAt.slice(0, 10) : isEn ? "unknown" : "непознато";
+    const label = isEn ? `⚠ no fresh data since ${since}` : `⚠ нема свежи податоци од ${since}`;
+    return `<ul><li>${esc(label)}</li></ul>`;
+  };
+  const freshness = c.dataFreshness;
 
   const { sales, ads, social, inventory } = c;
   const avgPctStr = sales.avgPct != null ? `${sales.avgPct.toFixed(1)}%` : noDataLabel;
@@ -58,37 +69,142 @@ function competitorBlock(c: CompetitorDigest, lang: "en" | "mk"): string {
           .join("")
       : `<li>${noDataLabel}</li>`;
 
-  return `
-<h3>${esc(c.targetId)}</h3>
-<h4>${salesLabel}</h4>
-<ul>
+  const salesBlock = freshness.products.stale
+    ? staleLine(freshness.products)
+    : `<ul>
   <li>${onSaleLabel}: ${sales.onSaleToday}</li>
   <li>${avgPctLabel}: ${avgPctStr}</li>
   <li>${newlyDiscLabel}: ${sales.newlyDiscounted}</li>
   <li>${endedLabel}: ${sales.ended}</li>
-</ul>
-<h4>${adsLabel}</h4>
-<ul>
+</ul>`;
+  const adsBlock = freshness.ads.stale
+    ? staleLine(freshness.ads)
+    : `<ul>
   <li>${activeTodayLabel}: ${ads.activeToday}</li>
   <li>${newAdsLabel}: <ul>${newAdLines}</ul></li>
   <li>${longestLabel}: ${longestRunningStr}</li>
-</ul>
-<h4>${socialLabel}</h4>
-<ul>
+</ul>`;
+  const socialBlock = freshness.social.stale
+    ? staleLine(freshness.social)
+    : `<ul>
   <li>${followerDeltaLabel}: <ul>${followerLines || `<li>${noDataLabel}</li>`}</ul></li>
-</ul>
-<h4>${inventoryLabel}</h4>
-<ul>
+</ul>`;
+  const inventoryBlock = freshness.products.stale
+    ? staleLine(freshness.products)
+    : `<ul>
   <li>${newProductsLabel}: ${inventory.newProducts}</li>
   <li>${stockoutsLabel}: <ul>${stockoutLines}</ul></li>
   <li>${priceMovesLabel}: <ul>${priceMoveLines}</ul></li>
 </ul>`;
+
+  // E2: price undercuts — derived from prices, so it shares the products
+  // freshness gate. Optional-chained for digests serialized before the field existed.
+  const undercuts = c.priceUndercuts;
+  const undercutItem = (u: {
+    ref: string;
+    name: string;
+    mtPrice: number;
+    compPrice: number;
+    deltaPct: number | null;
+  }) =>
+    `<li>${esc(u.name)} (${esc(u.ref)}): ${isEn ? "us" : "ние"} ${u.mtPrice} ${isEn ? "vs" : "нс."} ${u.compPrice}${u.deltaPct != null ? ` (${u.deltaPct}%)` : ""}</li>`;
+  const newlyUndercutLines =
+    undercuts && undercuts.newlyUndercut.length > 0
+      ? undercuts.newlyUndercut.map(undercutItem).join("")
+      : `<li>${noDataLabel}</li>`;
+  const resolvedLines =
+    undercuts && undercuts.resolved.length > 0
+      ? undercuts.resolved.map(undercutItem).join("")
+      : `<li>${noDataLabel}</li>`;
+  const undercutsBlock = freshness.products.stale
+    ? staleLine(freshness.products)
+    : `<ul>
+  <li>${newlyUndercutLabel}: ${undercuts?.totalNewlyUndercut ?? 0} <ul>${newlyUndercutLines}</ul></li>
+  <li>${resolvedLabel}: ${undercuts?.totalResolved ?? 0} <ul>${resolvedLines}</ul></li>
+</ul>`;
+
+  return `
+<h3>${esc(c.targetId)}</h3>
+<h4>${salesLabel}</h4>
+${salesBlock}
+<h4>${adsLabel}</h4>
+${adsBlock}
+<h4>${socialLabel}</h4>
+${socialBlock}
+<h4>${inventoryLabel}</h4>
+${inventoryBlock}
+<h4>${undercutsLabel}</h4>
+${undercutsBlock}`;
+}
+
+// ── D6: HTML sanitizer for Gemini output ─────────────────────────────────────
+// Allowlist: h2, h3, p, ul, ol, li, strong, em, br, a (https:// href only).
+// Everything else is stripped. No new runtime dependencies.
+
+const ALLOWED_TAGS = new Set(["h2", "h3", "p", "ul", "ol", "li", "strong", "em", "br", "a"]);
+
+/**
+ * Sanitize AI-generated HTML to an allowlist of safe tags.
+ * - Strips all `on*` event attributes and `style`/`class` attrs from every tag.
+ * - For <a>: only keeps `href` when it starts with `https?://`; strips everything else.
+ * - Strips script, style, iframe and all other non-allowlisted tags entirely (including their content
+ *   for script/style/iframe; for others just the tag itself is removed, content preserved).
+ */
+export function sanitizeDigestHtml(html: string): string {
+  // Remove script/style/iframe elements including their inner content.
+  const stripped = html.replace(/<(script|style|iframe)[\s\S]*?<\/\1\s*>/gi, "");
+
+  // Track whether each open <a> was kept or neutralized to <span>, so the
+  // matching </a> closes the right element. String.replace processes matches
+  // in document order, so a simple stack is sufficient.
+  const aNeutralized: boolean[] = [];
+
+  // Process remaining tags: keep allowed, strip others.
+  return stripped.replace(/<\/?([a-z][a-z0-9]*)[^>]*>/gi, (match, tag: string) => {
+    const tagLower = tag.toLowerCase();
+    if (!ALLOWED_TAGS.has(tagLower)) return "";
+
+    const isClose = /^<\//.test(match);
+
+    if (tagLower === "br") return "<br>";
+
+    if (tagLower === "a") {
+      if (isClose) {
+        // Close whatever the matching opener became (unbalanced close → </a>,
+        // harmless since we never emitted an unsafe opener).
+        return (aNeutralized.pop() ?? false) ? "</span>" : "</a>";
+      }
+      // Extract href attribute value (double or single quoted).
+      const hrefMatch = match.match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*))/i);
+      const href = hrefMatch?.[1] ?? hrefMatch?.[2] ?? hrefMatch?.[3] ?? "";
+      if (/^https?:\/\//i.test(href)) {
+        aNeutralized.push(false);
+        return `<a href="${href.replace(/"/g, "&quot;")}" rel="noopener noreferrer">`;
+      }
+      // No safe href → render as <span> so content is preserved but link is neutralized.
+      aNeutralized.push(true);
+      return "<span>";
+    }
+
+    if (isClose) return `</${tagLower}>`;
+
+    // For all other allowed tags: emit just the bare tag with no attributes.
+    return `<${tagLower}>`;
+  });
 }
 
 /** Deterministic bilingual fallback (EN then MK) used when Gemini is unavailable. */
 export function templateDigest(digest: DigestResult): string {
+  const weekly = digest.windowDays > 1;
   const block = (lang: "en" | "mk") => {
-    const heading = lang === "en" ? "Daily competitor digest" : "Дневен преглед на конкуренти";
+    const heading =
+      lang === "en"
+        ? weekly
+          ? `Weekly competitor digest (${digest.windowDays}-day window)`
+          : "Daily competitor digest"
+        : weekly
+          ? `Неделен преглед на конкуренти (${digest.windowDays} дена)`
+          : "Дневен преглед на конкуренти";
     const dateLabel = lang === "en" ? "Date" : "Датум";
     const blocks = digest.competitors.map((c) => competitorBlock(c, lang)).join("\n<hr/>\n");
     return `<h2>${heading}</h2>
@@ -113,11 +229,12 @@ export async function geminiNarrate(
 ): Promise<string | null> {
   const key = apiKey ?? optionalEnv("GEMINI_API_KEY");
   if (!key) return null;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+  // D3: API key in header — keeps it out of URLs, logs, and error echoes.
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
         system_instruction: { parts: [{ text: promptBody }] },
         contents: [{ parts: [{ text: JSON.stringify(digest) }] }],
@@ -174,9 +291,13 @@ export async function renderDigestWithPrompt(
   promptBody: string,
   apiKey?: string,
 ): Promise<{ subject: string; html: string; usedFallback: boolean }> {
-  const subject = `MY:TIME — Дневен преглед / Daily digest (${digest.generatedFor})`;
+  const subject =
+    digest.windowDays > 1
+      ? `MY:TIME — Неделен преглед / Weekly digest (${digest.generatedFor})`
+      : `MY:TIME — Дневен преглед / Daily digest (${digest.generatedFor})`;
   const narrated = await geminiNarrate(digest, promptBody, apiKey);
   const usedFallback = narrated == null;
-  const inner = narrated ?? templateDigest(digest);
+  // D6: sanitize AI-generated HTML before embedding in the email.
+  const inner = narrated != null ? sanitizeDigestHtml(narrated) : templateDigest(digest);
   return { subject, html: emailShell(subject, inner), usedFallback };
 }

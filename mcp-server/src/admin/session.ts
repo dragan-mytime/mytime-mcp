@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { requireEnv } from "@mytime/shared";
 import { jwtVerify, SignJWT } from "jose";
 
@@ -59,5 +59,8 @@ export function readCookie(header: string | undefined): string | null {
 }
 
 export function checkCsrf(sessionCsrf: string, formCsrf: unknown): boolean {
-  return typeof formCsrf === "string" && formCsrf.length > 0 && formCsrf === sessionCsrf;
+  if (typeof formCsrf !== "string" || formCsrf.length === 0) return false;
+  // D5: use timing-safe comparison to prevent timing side-channel attacks.
+  if (formCsrf.length !== sessionCsrf.length) return false;
+  return timingSafeEqual(Buffer.from(formCsrf), Buffer.from(sessionCsrf));
 }

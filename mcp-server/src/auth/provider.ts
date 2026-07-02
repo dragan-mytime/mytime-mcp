@@ -16,6 +16,7 @@ import { googleAuthUrl, passesDomainGate, verifyGoogleCallback } from "./google.
 import {
   deleteCode,
   deleteRefresh,
+  deleteRefreshByHash,
   getClient,
   getCode,
   getRefresh,
@@ -25,6 +26,7 @@ import {
   putPending,
   putRefresh,
   randomToken,
+  rotateRefresh,
   takePending,
 } from "./store.js";
 import { issueAccessToken, verifyAccessTokenJwt } from "./tokens.js";
@@ -117,15 +119,42 @@ export function createMyTimeProvider(pool: Pool): OAuthServerProvider {
       refreshToken: string,
       scopes?: string[],
     ): Promise<OAuthTokens> {
+      // getRefresh resolves a superseded token to its successor when the retry
+      // lands within the rotation grace window (lost-response reuse tolerance).
       const rec = await getRefresh(pool, refreshToken);
       if (!rec || rec.clientId !== client.client_id) throw new Error("invalid_grant");
-      // Re-check the whitelist so deactivations / role changes take effect on refresh.
-      const u = await lookupAuthorizedUser(pool, rec.email);
-      if (!u || !u.active) {
-        await deleteRefresh(pool, refreshToken);
+
+      // D4a: reject refresh tokens older than 90 days.
+      const maxAgeMs = 90 * 24 * 60 * 60 * 1000;
+      if (Date.now() - rec.createdAt.getTime() > maxAgeMs) {
+        await deleteRefreshByHash(pool, rec.tokenHash);
         throw new Error("invalid_grant");
       }
+
+      // Re-check the whitelist so deactivations / role changes take effect on refresh.
+      const u = await lookupAuthorizedUser(pool, rec.email);
+      if (!u?.active) {
+        await deleteRefreshByHash(pool, rec.tokenHash);
+        throw new Error("invalid_grant");
+      }
+
+      // D4c: requested scopes must be a subset of originally granted scopes.
+      const grantedSet = new Set(rec.scopes);
       const effScopes = scopes ?? rec.scopes;
+      if (scopes?.some((s) => !grantedSet.has(s))) {
+        throw new Error("invalid_scope");
+      }
+
+      // D4b: rotate — mark the active row superseded (grace window) + insert the
+      // new token atomically; the client gets the new refresh_token below.
+      const newRefreshToken = randomToken();
+      await rotateRefresh(pool, rec.tokenHash, newRefreshToken, {
+        email: rec.email,
+        role: u.role,
+        clientId: client.client_id,
+        scopes: effScopes,
+      });
+
       const { token, expiresAt } = await issueAccessToken({
         email: rec.email,
         role: u.role,
@@ -136,6 +165,7 @@ export function createMyTimeProvider(pool: Pool): OAuthServerProvider {
         access_token: token,
         token_type: "Bearer",
         expires_in: expiresAt - nowSec(),
+        refresh_token: newRefreshToken,
         scope: effScopes.join(" "),
       };
     },
@@ -185,7 +215,7 @@ export async function handleGoogleCallback(
     return denyRedirect(p, "access_denied", "Not a verified mytime.mk account");
   }
   const user = await lookupAuthorizedUser(pool, identity.email);
-  if (!user || !user.active) {
+  if (!user?.active) {
     return denyRedirect(p, "access_denied", "Account is not authorized");
   }
 

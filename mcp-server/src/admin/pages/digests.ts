@@ -1,4 +1,5 @@
 import {
+  type DigestPeriod,
   dailyDigest,
   deletePrompt,
   deleteSchedule,
@@ -6,6 +7,7 @@ import {
   getSchedule,
   listPrompts,
   listSchedules,
+  parseDigestPeriod,
   parseRecipients,
   renderDigestWithPrompt,
   resolveGeminiKey,
@@ -45,7 +47,7 @@ export async function render(_req: Request): Promise<string> {
       (s) => `
       <tr>
         <td><div class="t-name">${esc(s.name)}</div><div class="t-sub">${esc(s.promptName)}</div></td>
-        <td>${esc(s.sendAt)}</td>
+        <td>${esc(s.sendAt)}${parseDigestPeriod(s.period) === "weekly" ? ' <span class="t-sub">weekly</span>' : ""}</td>
         <td><span class="pill ${s.enabled ? "pill-on" : "pill-off"}">${s.enabled ? "On" : "Off"}</span></td>
         <td><a class="btn btn-sm btn-primary" href="/admin/digests/schedules/${esc(s.id)}">Edit</a></td>
       </tr>`,
@@ -241,6 +243,7 @@ function scheduleForm(
     name: string;
     promptId: string;
     sendAt: string;
+    period: DigestPeriod;
     recipients: string[] | null;
     enabled: boolean;
   } | null,
@@ -268,6 +271,11 @@ function scheduleForm(
         <select id="s-prompt" name="prompt_id">${options || '<option value="">— no prompts —</option>'}</select>
         <label for="s-time">Send at (Europe/Skopje)</label>
         <input id="s-time" type="time" name="send_at" value="${esc(schedule?.sendAt ?? "07:00")}">
+        <label for="s-period">Period</label>
+        <select id="s-period" name="period">
+          <option value="daily"${schedule?.period !== "weekly" ? " selected" : ""}>Daily (day-over-day)</option>
+          <option value="weekly"${schedule?.period === "weekly" ? " selected" : ""}>Weekly (vs ~7 days earlier)</option>
+        </select>
         <label for="s-rcpt">Recipients (one per line; blank = use global Recipients)</label>
         <textarea id="s-rcpt" name="recipients" placeholder="name@example.com">${esc(recipientsText)}</textarea>
         <label style="font-weight:500;margin-top:.4rem;">
@@ -307,6 +315,7 @@ export async function renderScheduleEdit(req: Request): Promise<{ title: string;
         name: schedule.name,
         promptId: schedule.promptId,
         sendAt: schedule.sendAt,
+        period: parseDigestPeriod(schedule.period),
         recipients: (schedule.recipients as string[] | null) ?? null,
         enabled: schedule.enabled,
       },
@@ -343,11 +352,13 @@ export async function submitSchedule(
       return { error: "One or more recipients are not valid email addresses" };
     }
     const enabled = body.enabled === "1" || body.enabled === "on";
+    const period = parseDigestPeriod(body.period);
     await upsertSchedule(db, {
       id: id || undefined,
       name,
       promptId,
       sendAt,
+      period,
       recipients: recipients.length > 0 ? recipients : null,
       enabled,
     });

@@ -20,6 +20,25 @@ interface TargetRow {
 // Accept http(s) URLs or empty string
 const URL_RE = /^https?:\/\/.+/i;
 
+/** D7: validate that a URL's hostname is within an expected domain (or its www./m. subdomains). */
+function validatePlatformUrl(
+  rawUrl: string,
+  platform: string,
+  allowedDomain: string,
+): string | null {
+  if (!rawUrl) return null; // empty is fine
+  if (!URL_RE.test(rawUrl)) return `${platform} URL must start with https://`;
+  try {
+    const { protocol, hostname } = new URL(rawUrl);
+    if (protocol !== "https:") return `${platform} URL must use https://`;
+    const host = hostname.toLowerCase().replace(/^(www\.|m\.)/, "");
+    if (host !== allowedDomain) return `${platform} URL must be on ${allowedDomain}`;
+  } catch {
+    return `${platform} URL is invalid`;
+  }
+  return null; // valid
+}
+
 function socialHandle(social: Record<string, string> | null, key: string): string {
   if (!social || typeof social !== "object") return "";
   const val = (social as Record<string, unknown>)[key];
@@ -155,12 +174,20 @@ export async function submit(
     const instagram = String(body.instagram ?? "").trim() || null;
     const facebook = String(body.facebook ?? "").trim() || null;
     const tiktok = String(body.tiktok ?? "").trim() || null;
+
+    // D7: validate platform URLs against expected hosts.
+    const igErr = instagram ? validatePlatformUrl(instagram, "Instagram", "instagram.com") : null;
+    if (igErr) return { error: igErr };
+    const fbErr = facebook ? validatePlatformUrl(facebook, "Facebook", "facebook.com") : null;
+    if (fbErr) return { error: fbErr };
+    const ttErr = tiktok ? validatePlatformUrl(tiktok, "TikTok", "tiktok.com") : null;
+    if (ttErr) return { error: ttErr };
     const active = body.active === "1" || body.active === "on";
 
     const social: Record<string, string> = {};
-    if (instagram) social["instagram"] = instagram;
-    if (facebook) social["facebook"] = facebook;
-    if (tiktok) social["tiktok"] = tiktok;
+    if (instagram) social.instagram = instagram;
+    if (facebook) social.facebook = facebook;
+    if (tiktok) social.tiktok = tiktok;
 
     const socialJson = JSON.stringify(social);
     const webUrlVal = webUrl || null;

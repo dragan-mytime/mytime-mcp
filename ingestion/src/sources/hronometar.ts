@@ -91,7 +91,7 @@ export function parseNop(html: string, url: string): ProductObservation | null {
     externalId: id ?? url.split("/").filter(Boolean).pop() ?? url,
     name,
     brand: null,
-    modelRef: parseModelRef(name, code, null),
+    modelRef: parseModelRef(name, code, null)?.ref ?? null,
     category: null,
     productType: normalizeType(null, name, "watches"),
     gender: normalizeGender(specValue(html, "Пол")) ?? normalizeGender(name),

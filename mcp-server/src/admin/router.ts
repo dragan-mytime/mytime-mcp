@@ -6,7 +6,7 @@ import * as recipients from "./pages/recipients.js";
 import * as settings from "./pages/settings.js";
 import * as targets from "./pages/targets.js";
 import * as users from "./pages/users.js";
-import { layout } from "./render.js";
+import { esc, layout } from "./render.js";
 
 export function adminRouter(): Router {
   const r = express.Router();
@@ -43,7 +43,7 @@ export function adminRouter(): Router {
         res
           .status(400)
           .type("html")
-          .send(layout("Error", `<p class="error">${out.error}</p>`));
+          .send(layout("Error", `<p class="error">${esc(out.error)}</p>`));
         return;
       }
       res.redirect(out.redirect + (out.flash ? `?msg=${encodeURIComponent(out.flash)}` : ""));
@@ -69,7 +69,9 @@ export function adminRouter(): Router {
         res
           .status(400)
           .type("html")
-          .send(layout("Error", `<p class="error">${out.error}</p>`, { activeNav: "Digests" }));
+          .send(
+            layout("Error", `<p class="error">${esc(out.error)}</p>`, { activeNav: "Digests" }),
+          );
         return;
       }
       res.redirect(out.redirect + (out.flash ? `?msg=${encodeURIComponent(out.flash)}` : ""));

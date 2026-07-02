@@ -1,5 +1,5 @@
 import { optionalEnv } from "@mytime/shared";
-import { and, asc, eq, isNull, lt, or } from "drizzle-orm";
+import { and, asc, eq, isNull, lt, lte, or } from "drizzle-orm";
 import type { Db } from "./index.js";
 import {
   type DigestPromptRow,
@@ -54,16 +54,18 @@ export function validRecipients(list: string[]): boolean {
 
 /**
  * Pure mirror of the `dueSchedules` SQL WHERE clause (kept in sync with it):
- * enabled, time matches, and not yet run today. `lastRunOn` is a "YYYY-MM-DD"
- * string, so the `<` compare is chronological. Unit-tested; if this changes,
- * update the query in `dueSchedules` to match.
+ * enabled, send time reached (`sendAt <= hhmm`, so a missed exact minute still
+ * catches up later the same day), and not yet run today. `lastRunOn` guards
+ * idempotency: both it and `todayLocal` are "YYYY-MM-DD" strings, so the `<`
+ * compare is chronological. Unit-tested; if this changes, update the query in
+ * `dueSchedules` to match.
  */
 export function isDue(
   s: { sendAt: string; enabled: boolean; lastRunOn: string | null },
   todayLocal: string,
   hhmm: string,
 ): boolean {
-  return s.enabled && s.sendAt === hhmm && (s.lastRunOn == null || s.lastRunOn < todayLocal);
+  return s.enabled && s.sendAt <= hhmm && (s.lastRunOn == null || s.lastRunOn < todayLocal);
 }
 
 /** Generate a slug from `name` that is unique among existing ids in the given column. */
@@ -122,6 +124,7 @@ export async function listSchedules(db: Db): Promise<ScheduleWithPrompt[]> {
       name: digestSchedules.name,
       promptId: digestSchedules.promptId,
       sendAt: digestSchedules.sendAt,
+      period: digestSchedules.period,
       recipients: digestSchedules.recipients,
       enabled: digestSchedules.enabled,
       lastRunOn: digestSchedules.lastRunOn,
@@ -147,6 +150,7 @@ export async function upsertSchedule(
     name: string;
     promptId: string;
     sendAt: string;
+    period?: DigestPeriod;
     recipients: string[] | null;
     enabled: boolean;
   },
@@ -155,6 +159,7 @@ export async function upsertSchedule(
     name: input.name,
     promptId: input.promptId,
     sendAt: input.sendAt,
+    period: input.period ?? "daily",
     recipients: input.recipients,
     enabled: input.enabled,
     updatedAt: new Date(),
@@ -175,14 +180,28 @@ export async function deleteSchedule(db: Db, id: string): Promise<void> {
 
 // ── Scheduler support ──────────────────────────────────────────────────────
 
+/** Digest comparison mode: day-over-day or weekly rollup (E8). */
+export type DigestPeriod = "daily" | "weekly";
+
+/** Coerce a stored period value to a valid DigestPeriod (unknown → 'daily'). */
+export function parseDigestPeriod(v: unknown): DigestPeriod {
+  return v === "weekly" ? "weekly" : "daily";
+}
+
 export interface DueSchedule {
   id: string;
   name: string;
   body: string;
+  period: DigestPeriod;
   recipients: string[] | null;
 }
 
-/** Enabled schedules whose send_at == hhmm and that have not run on todayLocal yet. */
+/**
+ * Enabled schedules whose send_at <= hhmm and that have not run on todayLocal
+ * yet. `<=` (not `==`) so a missed 60s tick (deploy, restart, slow render)
+ * catches up on the next tick instead of silently skipping the day; last_run_on
+ * keeps the catch-up idempotent.
+ */
 export async function dueSchedules(
   db: Db,
   todayLocal: string,
@@ -193,6 +212,7 @@ export async function dueSchedules(
       id: digestSchedules.id,
       name: digestSchedules.name,
       body: digestPrompts.body,
+      period: digestSchedules.period,
       recipients: digestSchedules.recipients,
     })
     .from(digestSchedules)
@@ -200,7 +220,7 @@ export async function dueSchedules(
     .where(
       and(
         eq(digestSchedules.enabled, true),
-        eq(digestSchedules.sendAt, hhmm),
+        lte(digestSchedules.sendAt, hhmm),
         or(isNull(digestSchedules.lastRunOn), lt(digestSchedules.lastRunOn, todayLocal)),
       ),
     );
@@ -208,12 +228,40 @@ export async function dueSchedules(
     id: r.id,
     name: r.name,
     body: r.body,
+    period: parseDigestPeriod(r.period),
     recipients: (r.recipients as string[] | null) ?? null,
   }));
 }
 
-export async function markScheduleRan(db: Db, id: string, todayLocal: string): Promise<void> {
-  await db.update(digestSchedules).set({ lastRunOn: todayLocal }).where(eq(digestSchedules.id, id));
+/**
+ * Atomically claim today's run: sets last_run_on = todayLocal only if the
+ * schedule has not already run today (`UPDATE … WHERE … RETURNING`). Returns
+ * true when this caller won the claim — send only then. Makes the
+ * mark-then-send protocol safe even if two scheduler instances tick at once.
+ */
+export async function markScheduleRan(db: Db, id: string, todayLocal: string): Promise<boolean> {
+  const claimed = await db
+    .update(digestSchedules)
+    .set({ lastRunOn: todayLocal })
+    .where(
+      and(
+        eq(digestSchedules.id, id),
+        or(isNull(digestSchedules.lastRunOn), lt(digestSchedules.lastRunOn, todayLocal)),
+      ),
+    )
+    .returning({ id: digestSchedules.id });
+  return claimed.length > 0;
+}
+
+/**
+ * Undo `markScheduleRan` after a failed send so the next tick retries — but
+ * only if the mark is still todayLocal (never clobber another day's run).
+ */
+export async function clearScheduleRun(db: Db, id: string, todayLocal: string): Promise<void> {
+  await db
+    .update(digestSchedules)
+    .set({ lastRunOn: null })
+    .where(and(eq(digestSchedules.id, id), eq(digestSchedules.lastRunOn, todayLocal)));
 }
 
 /** A schedule's recipients, or the global digest_recipients setting, or a final default. */

@@ -48,4 +48,47 @@ describe("mapIgPosts", () => {
     expect(p?.reachSource).toBe("views");
     expect(p?.postType).toBe("video");
   });
+
+  // A9: Apify returns likesCount=-1 when the profile hides likes.
+  it("A9: -1 likesCount maps to null likes and engagement = comments only", () => {
+    const hiddenLikesProfile = {
+      followersCount: 5000,
+      latestPosts: [
+        {
+          id: "hidden1",
+          shortCode: "hidden1",
+          url: "https://instagram.com/p/hidden1",
+          type: "Image",
+          likesCount: -1, // Apify hidden-likes sentinel
+          commentsCount: 15,
+          timestamp: "2026-06-20T10:00:00.000Z",
+        },
+      ],
+    };
+    const posts = mapIgPosts(hiddenLikesProfile as never);
+    const p = posts[0];
+    expect(p?.likes).toBeNull();
+    expect(p?.comments).toBe(15);
+    expect(p?.engagement).toBe(15); // comments only — no -1 pollution
+  });
+
+  it("A9: both likes and comments null → engagement null (no hidden-likes sentinel)", () => {
+    const noDataProfile = {
+      followersCount: 5000,
+      latestPosts: [
+        {
+          id: "nodata1",
+          shortCode: "nodata1",
+          url: "https://instagram.com/p/nodata1",
+          type: "Image",
+          timestamp: "2026-06-20T10:00:00.000Z",
+          // no likesCount, no commentsCount
+        },
+      ],
+    };
+    const posts = mapIgPosts(noDataProfile as never);
+    expect(posts[0]?.likes).toBeNull();
+    expect(posts[0]?.comments).toBeNull();
+    expect(posts[0]?.engagement).toBeNull();
+  });
 });

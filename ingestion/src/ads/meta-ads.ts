@@ -66,7 +66,11 @@ export function mapAdItems(raw: unknown[], runDate: string): AdObservation[] {
   return out;
 }
 
-/** Scrape active ads for competitor FB page URLs (one batched run), grouped by target. */
+/**
+ * Scrape active ads for competitor FB page URLs (one batched run), grouped by
+ * target. `resultsLimit` comes from the admin `ad_results_limit` setting
+ * (the runner passes it; 50 is the safety default).
+ */
 export async function collectCompetitorAds(
   pages: { targetId: string; url: string }[],
   runDate: string,

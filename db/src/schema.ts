@@ -325,6 +325,11 @@ export const oauthRefreshTokens = pgTable("oauth_refresh_tokens", {
   clientId: text("client_id").notNull(),
   scopes: jsonb("scopes").notNull(), // string[]
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  // D4 review: rotation reuse tolerance (OAuth 2.1 §4.3). On rotation the old row
+  // is marked superseded (not deleted); a retry with the old token within the
+  // grace window resolves to its successor instead of failing with invalid_grant.
+  supersededByHash: text("superseded_by_hash"),
+  supersededAt: timestamp("superseded_at", { withTimezone: true }),
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -346,6 +351,8 @@ export const digestSchedules = pgTable("digest_schedules", {
     .notNull()
     .references(() => digestPrompts.id, { onDelete: "restrict" }),
   sendAt: text("send_at").notNull(), // "HH:MM", interpreted in Europe/Skopje
+  // 'daily' (day-over-day) | 'weekly' (each target's latest vs ≥7 days earlier, E8)
+  period: text("period").notNull().default("daily"),
   recipients: jsonb("recipients"), // string[] | null → falls back to digest_recipients
   enabled: boolean("enabled").notNull().default(true),
   lastRunOn: date("last_run_on"), // local date the schedule last fired (idempotency)

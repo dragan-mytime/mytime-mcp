@@ -2,25 +2,40 @@ import { describe, expect, it } from "vitest";
 import { brandMatchKey, normalizeModelKey, parseModelRef } from "../src/pipeline/normalize.js";
 
 describe("parseModelRef", () => {
-  it("prefers a real sku over name/slug", () => {
-    expect(parseModelRef("CARSON", "H76615130", "carson-4")).toBe("H76615130");
+  it("prefers a real sku over name/slug — source: attr", () => {
+    const r = parseModelRef("CARSON", "H76615130", "carson-4");
+    expect(r).toEqual({ ref: "H76615130", source: "attr" });
   });
-  it("ignores a numeric db-id sku and finds the code in the name", () => {
-    expect(parseModelRef("Casio Timeless A168WA-1W", "24602", "casio-timeless-a168wa-1w")).toBe(
-      "A168WA-1W",
-    );
+  it("ignores a numeric db-id sku and finds the code in the name — source: name", () => {
+    const r = parseModelRef("Casio Timeless A168WA-1W", "24602", "casio-timeless-a168wa-1w");
+    expect(r).toEqual({ ref: "A168WA-1W", source: "name" });
   });
-  it("extracts a dotted manufacturer code mid-name", () => {
-    expect(parseModelRef("PIERRE CARDIN CF.1019.LB.1", null, null)).toBe("CF.1019.LB.1");
+  it("extracts a dotted manufacturer code mid-name — source: name", () => {
+    const r = parseModelRef("PIERRE CARDIN CF.1019.LB.1", null, null);
+    expect(r).toEqual({ ref: "CF.1019.LB.1", source: "name" });
   });
-  it("extracts a leading code", () => {
-    expect(parseModelRef("JC1L359M0075 Eterna Set", null, null)).toBe("JC1L359M0075");
+  it("extracts a leading code — source: name", () => {
+    const r = parseModelRef("JC1L359M0075 Eterna Set", null, null);
+    expect(r).toEqual({ ref: "JC1L359M0075", source: "name" });
   });
-  it("falls back to the slug when the name has no code", () => {
-    expect(parseModelRef("Notes of Coral", null, "notes-of-coral")).toBe("NOTES-OF-CORAL");
+  it("falls back to the slug when the name has no code — source: slug (B7: callers should NOT store this)", () => {
+    const r = parseModelRef("Notes of Coral", null, "notes-of-coral");
+    expect(r).toEqual({ ref: "NOTES-OF-CORAL", source: "slug" });
   });
   it("returns null when there is nothing usable", () => {
     expect(parseModelRef("Watch", null, null)).toBeNull();
+  });
+
+  // B7: callers must NOT store slug-derived refs as match keys
+  it("callers correctly discard slug-derived refs (B7)", () => {
+    const r = parseModelRef("Notes of Coral", null, "notes-of-coral");
+    const stored = r?.source !== "slug" ? (r?.ref ?? null) : null;
+    expect(stored).toBeNull();
+  });
+  it("callers keep attr/name-derived refs (B7)", () => {
+    const r = parseModelRef("Casio Timeless A168WA-1W", null, "casio-timeless-a168wa-1w");
+    const stored = r?.source !== "slug" ? (r?.ref ?? null) : null;
+    expect(stored).toBe("A168WA-1W");
   });
 });
 

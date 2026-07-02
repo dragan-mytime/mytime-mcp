@@ -33,7 +33,7 @@ export function parseListing(html: string): ProductObservation[] {
       externalId: id ?? url.split("/").filter(Boolean).pop() ?? url,
       name: name ?? url,
       brand: "Pandora", // monobrand franchise
-      modelRef: parseModelRef(name, null, null),
+      modelRef: parseModelRef(name, null, null)?.ref ?? null,
       category: null,
       productType: "jewelry",
       gender: "womens",

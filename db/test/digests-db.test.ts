@@ -58,13 +58,23 @@ describe("isDue", () => {
   it("not due when disabled", () => {
     expect(isDue({ ...base, enabled: false }, "2026-06-29", "07:00")).toBe(false);
   });
-  it("not due when time differs", () => {
-    expect(isDue(base, "2026-06-29", "07:01")).toBe(false);
+  it("not due before the send time", () => {
+    expect(isDue(base, "2026-06-29", "06:59")).toBe(false);
+  });
+  it("catch-up: due later the same day when the exact minute was missed", () => {
+    expect(isDue(base, "2026-06-29", "07:23")).toBe(true);
+    expect(isDue(base, "2026-06-29", "23:59")).toBe(true);
+  });
+  it("catch-up is idempotent: not due once already run today, even later", () => {
+    expect(isDue({ ...base, lastRunOn: "2026-06-29" }, "2026-06-29", "07:23")).toBe(false);
   });
   it("not due when already run today", () => {
     expect(isDue({ ...base, lastRunOn: "2026-06-29" }, "2026-06-29", "07:00")).toBe(false);
   });
   it("due again on a later day", () => {
     expect(isDue({ ...base, lastRunOn: "2026-06-28" }, "2026-06-29", "07:00")).toBe(true);
+  });
+  it("disabled schedule never fires even past its time", () => {
+    expect(isDue({ ...base, enabled: false }, "2026-06-29", "12:00")).toBe(false);
   });
 });

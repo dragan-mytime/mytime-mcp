@@ -1,12 +1,17 @@
 import { dailyDigest } from "@mytime/db";
 import { z } from "zod";
 import {
+  assortmentGaps,
   compareMarketShare,
   compareSkus,
   competitorAds,
+  dataHealth,
   inventoryVelocity,
   priceAssortment,
+  priceHistory,
+  promoCalendar,
   socialBenchmark,
+  socialContent,
   socialPosts,
 } from "../analytics.js";
 import { listAuthorizedUsers } from "../auth/authorized-users.js";
@@ -128,6 +133,29 @@ export const tools: McpToolDef[] = [
       ),
   },
   {
+    name: "social_content",
+    title: "Social content analysis (hashtags, posting heatmap, brand mentions)",
+    description:
+      "Mines stored social post captions per competitor: top-10 hashtags by count + avg engagement, posting time heatmap (day-of-week × hour in Europe/Skopje) with best slots, and brand mentions (active product brands matched as whole words in captions). Use to discover trending topics, optimal posting times, and competitor brand promotion patterns.",
+    requiredRole: "analyst",
+    inputSchema: {
+      competitor: z.string().optional().describe("target id, e.g. 'b-watch'; omit for all"),
+      platform: z
+        .enum(["instagram", "facebook", "tiktok"])
+        .optional()
+        .describe("filter to one platform"),
+      days: z
+        .number()
+        .int()
+        .positive()
+        .max(90)
+        .optional()
+        .describe("lookback window in days (default 30, max 90)"),
+    },
+    run: (pool, a) =>
+      socialContent(pool, a as { competitor?: string; platform?: string; days?: number }),
+  },
+  {
     name: "price_assortment",
     title: "Price & assortment tracking",
     description:
@@ -170,14 +198,108 @@ export const tools: McpToolDef[] = [
     name: "daily_digest",
     title: "Daily competitor digest (day-over-day changes)",
     description:
-      "What competitors did since the last snapshot: new/ended sales campaigns, new/stopped ads + long-runners, follower moves, new products/stockouts/price moves. Returns structured data — narrate it as a briefing (the user may ask in English or Macedonian). Figures are estimates.",
+      "What competitors did since the last snapshot: new/ended sales campaigns, new/stopped ads + long-runners, follower moves, new products/stockouts/price moves. Each competitor is compared on its OWN latest vs prior capture dates and carries a dataFreshness stamp (stale = no successful scrape in 48h). Returns structured data — narrate it as a briefing (the user may ask in English or Macedonian). Figures are estimates.",
     requiredRole: "analyst",
     inputSchema: {
       competitor: z
         .string()
         .optional()
         .describe("target id, e.g. 'b-watch'; omit for all competitors"),
+      days: z
+        .number()
+        .int()
+        .positive()
+        .max(31)
+        .optional()
+        .describe(
+          "comparison window: prior = each target's latest capture ≥ this many days older than its latest (default 1 = day-over-day; 7 = weekly)",
+        ),
     },
-    run: (_pool, a) => dailyDigest(readDb(), a as { competitor?: string }),
+    run: (_pool, a) => dailyDigest(readDb(), a as { competitor?: string; days?: number }),
+  },
+  {
+    name: "data_health",
+    title: "Ingestion data health (per target × collector)",
+    description:
+      "Freshness of the scraped data: per target and collector, the last successful run (time + rows written), last failure (time + error), and consecutive failures since the last success. Social + ad collectors run once for all targets and appear as '(all targets)'. Use this before trusting zeros in other tools.",
+    requiredRole: "analyst",
+    inputSchema: {
+      competitor: z.string().optional().describe("target id, e.g. 'b-watch'; omit for all targets"),
+    },
+    run: (pool, a) => dataHealth(pool, a as { competitor?: string }),
+  },
+  {
+    name: "price_history",
+    title: "Price & discount history (time series per product)",
+    description:
+      "Full price time series (date, effective price, discountPct) per product, plus a summary (current/min/max price, biggest single-day drop). At least one filter is required. Effective price = COALESCE(sale_price, price). Source: daily web scrapes.",
+    requiredRole: "analyst",
+    inputSchema: {
+      competitor: z.string().optional().describe("target id, e.g. 'b-watch'; filter by competitor"),
+      brand: z.string().optional().describe("brand name (case-insensitive exact match)"),
+      modelRef: z
+        .string()
+        .optional()
+        .describe("manufacturer reference (case-insensitive exact match, e.g. 'A168WA-1W')"),
+      q: z.string().optional().describe("product name ILIKE search (partial match)"),
+      days: z
+        .number()
+        .int()
+        .positive()
+        .max(365)
+        .optional()
+        .describe("lookback window in days (default 90, max 365)"),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .max(100)
+        .optional()
+        .describe("max products to return (default 20, max 100)"),
+    },
+    run: (pool, a) =>
+      priceHistory(
+        pool,
+        a as {
+          competitor?: string;
+          brand?: string;
+          modelRef?: string;
+          q?: string;
+          days?: number;
+          limit?: number;
+        },
+      ),
+  },
+  {
+    name: "assortment_gaps",
+    title: "Assortment gaps (brands each side carries exclusively)",
+    description:
+      "Brands a competitor carries that MY:TIME doesn't (comp_only) and vice versa (mt_only), with per-brand active product count and min/median/max effective price. Uses the same brand normalization as compare_skus (CASIO% collapsed). Active products only.",
+    requiredRole: "analyst",
+    inputSchema: {
+      competitor: z.string().describe("competitor target id, e.g. 'b-watch'"),
+    },
+    run: (pool, a) => assortmentGaps(pool, a as { competitor: string }),
+  },
+  {
+    name: "promo_calendar",
+    title: "Promo calendar (discount-wave detection per competitor)",
+    description:
+      "Detects promotional waves per competitor from price history. A wave = ≥max(5, 10% of active catalog) products on sale per day, with gaps of ≤2 days allowed. Returns wave start/end dates, peak breadth (max daily discounted count), and avg discount depth. Useful for planning MY:TIME campaigns around competitor sale seasons.",
+    requiredRole: "analyst",
+    inputSchema: {
+      competitor: z
+        .string()
+        .optional()
+        .describe("target id, e.g. 'bozinovski'; omit for all competitors"),
+      days: z
+        .number()
+        .int()
+        .positive()
+        .max(180)
+        .optional()
+        .describe("lookback window in days (default 90, max 180)"),
+    },
+    run: (pool, a) => promoCalendar(pool, a as { competitor?: string; days?: number }),
   },
 ];
