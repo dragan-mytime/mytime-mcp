@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import {
   createDb,
+  deactivateMissingProducts,
   ensureSocialAccount,
   ensureTargetAndLocation,
   loadTargetsFromDb,
@@ -12,6 +13,7 @@ import {
 } from "@mytime/db";
 import { logger, optionalEnv, requireEnv } from "@mytime/shared";
 import { collectCompetitorAds } from "./ads/meta-ads.js";
+import { skopjeDate } from "./pipeline/dates.js";
 import { extractHandle } from "./social/_social.js";
 import { socialCollectors } from "./social/index.js";
 import { collectOwnBrandMeta } from "./social/meta-own.js";
@@ -31,15 +33,14 @@ export interface RunSummary {
   failures: { collector: string; target: string; error: string }[];
 }
 
-const today = (): string => new Date().toISOString().slice(0, 10);
-
 /**
  * Daily ingestion run. Per (collector × applicable target):
  *   ensure target+location → collect → idempotent write → log to ingestion_runs.
  * Per-source failure isolation: one collector throwing logs and continues — it
  * never aborts the others. Re-running the same day upserts, never duplicates.
+ * runDate is the Europe/Skopje calendar date, not UTC.
  */
-export async function run(runDate: string = today()): Promise<RunSummary> {
+export async function run(runDate: string = skopjeDate()): Promise<RunSummary> {
   const db = createDb(requireEnv("DATABASE_URL"));
   const targets = await loadTargetsFromDb(db);
   const summary: RunSummary = {
@@ -56,6 +57,18 @@ export async function run(runDate: string = today()): Promise<RunSummary> {
     "ingestion run starting",
   );
 
+  // Per-target product-collect outcomes, so deactivation (below) runs once per
+  // target and only when every product collector that ran for it succeeded.
+  const productOutcomes = new Map<string, { succeeded: number; failed: number }>();
+  const outcomeFor = (id: string) => {
+    let o = productOutcomes.get(id);
+    if (!o) {
+      o = { succeeded: 0, failed: 0 };
+      productOutcomes.set(id, o);
+    }
+    return o;
+  };
+
   for (const collector of productCollectors) {
     if (onlyCollectors && !onlyCollectors.includes(collector.id)) continue;
     for (const target of targets.filter(
@@ -69,6 +82,7 @@ export async function run(runDate: string = today()): Promise<RunSummary> {
         const rows = await writeObservations(db, target, locationId, runDate, collector.id, obs);
         summary.succeeded++;
         summary.rows += rows;
+        outcomeFor(target.id).succeeded++;
         await recordRun(db, {
           runDate,
           collector: collector.id,
@@ -82,6 +96,7 @@ export async function run(runDate: string = today()): Promise<RunSummary> {
         summary.failed++;
         const error = err instanceof Error ? err.message : String(err);
         summary.failures.push({ collector: collector.id, target: target.id, error });
+        outcomeFor(target.id).failed++;
         await recordRun(db, {
           runDate,
           collector: collector.id,
@@ -96,6 +111,19 @@ export async function run(runDate: string = today()): Promise<RunSummary> {
           "collector failed (isolated)",
         );
       }
+    }
+  }
+
+  // ── Deactivate products missing from today's successful product collects ──
+  // Once per target; skipped when any of the target's product collectors failed
+  // (a failed collect must not deactivate the rows it would have refreshed).
+  for (const [targetId, o] of productOutcomes) {
+    if (o.succeeded === 0 || o.failed > 0) continue;
+    try {
+      const deactivated = await deactivateMissingProducts(db, targetId, runDate);
+      logger.info({ targetId, deactivated }, "deactivated products missing from feed");
+    } catch (err) {
+      logger.error({ targetId, err }, "product deactivation failed (isolated)");
     }
   }
 

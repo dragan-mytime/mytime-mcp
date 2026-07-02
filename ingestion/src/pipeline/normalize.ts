@@ -15,7 +15,7 @@ export function normalizeBrand(v: unknown): string | null {
 export function normalizeGender(v: unknown): string | null {
   const s = (cleanText(v) ?? "").toLowerCase();
   if (!s) return null;
-  if (/(маш|mašk|mask|machk|\bmen\b|муж)/.test(s)) return "mens";
+  if (/(маш|маж|mašk|mask|machk|\bmen\b|муж)/.test(s)) return "mens";
   if (/(жен|žen|\bzen|women|\bwom)/.test(s)) return "womens";
   if (/(уни|unisex)/.test(s)) return "unisex";
   if (/(дет|деца|kid|child)/.test(s)) return "kids";

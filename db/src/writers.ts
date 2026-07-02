@@ -6,7 +6,7 @@ import type {
   SocialPostObservation,
   Target,
 } from "@mytime/shared";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, lt, sql } from "drizzle-orm";
 import type { Db } from "./index.js";
 import {
   adObservations,
@@ -204,6 +204,32 @@ export async function writeObservations(
   });
 
   return items.length;
+}
+
+/**
+ * Mark a target's products that were NOT seen in the current run as inactive
+ * (last_seen_date predates runDate). Call only after every product collector for
+ * the target succeeded — a failed collect must never deactivate the rows it
+ * would have refreshed. Re-appearing products flip back via the upsert's
+ * `active: true`. Returns the number of products deactivated.
+ */
+export async function deactivateMissingProducts(
+  db: Db,
+  targetId: string,
+  runDate: string,
+): Promise<number> {
+  const ret = await db
+    .update(products)
+    .set({ active: false })
+    .where(
+      and(
+        eq(products.targetId, targetId),
+        eq(products.active, true),
+        lt(products.lastSeenDate, runDate),
+      ),
+    )
+    .returning({ id: products.id });
+  return ret.length;
 }
 
 /** Upsert a social account and return its id. */

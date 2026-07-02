@@ -1,12 +1,17 @@
 import type { Pool } from "@mytime/shared";
 
 export const DEPLETION_DISCLAIMER =
-  "Estimated from inventory depletion, not measured sales. Sites with exact stock counts (B-Watch, Bozinovski, Saat&Saat, Zia) yield 'exact'-basis estimates; others assume 1 unit per stock-out or disappearance ('assumed' basis). Needs ≥2 days of snapshots to produce velocity.";
+  "Estimated, not measured sales. Counts snapshot-to-snapshot quantity drops (exact counts on B-Watch, Bozinovski, Saat&Saat, Zia → 'exact' basis; elsewhere 1 unit per in-stock→out-of-stock transition, 'assumed') plus the last known quantity of exact-count products that disappeared from the feed. Restocks are not netted against drops; drops before the first snapshot in the window are not visible. Needs ≥2 days of snapshots.";
 
 /**
  * Shared depletion CTE: day-over-day stock deltas → inferred units sold per
  * product per day, with basis (exact|assumed). Restocks (qty up) and gaps count
- * as 0. `$1` = lookback days; an optional target filter is appended by callers.
+ * as 0. Disappearances are unioned in: a now-inactive product whose last
+ * in-window snapshot had an exact positive quantity, and whose last_seen_date is
+ * in-window and older than its target's latest snapshot (i.e. it vanished while
+ * the target was still being scraped), contributes that last quantity.
+ * `$1` = window length in days (window = today and the $1-1 days before it);
+ * an optional target filter is appended by callers.
  */
 function depletionCte(targetFilter: string): string {
   return `
@@ -17,10 +22,10 @@ function depletionCte(targetFilter: string): string {
              lag(s.stock_status)  OVER w AS prev_status
       FROM inventory_snapshots s
       JOIN products p ON p.id = s.product_id
-      WHERE s.captured_date >= current_date - $1::int ${targetFilter}
+      WHERE s.captured_date >= current_date - ($1::int - 1) ${targetFilter}
       WINDOW w AS (PARTITION BY s.product_id ORDER BY s.captured_date)
     ),
-    units AS (
+    drops AS (
       SELECT target_id, product_id, name, brand, captured_date,
         CASE
           WHEN qty_basis = 'exact' AND prev_qty IS NOT NULL AND stock_quantity < prev_qty
@@ -34,6 +39,37 @@ function depletionCte(targetFilter: string): string {
             THEN 'exact' ELSE 'assumed'
         END AS basis
       FROM snaps
+    ),
+    target_latest AS (
+      SELECT p2.target_id, max(s2.captured_date) AS latest_date
+      FROM inventory_snapshots s2
+      JOIN products p2 ON p2.id = s2.product_id
+      GROUP BY p2.target_id
+    ),
+    last_snap AS (
+      SELECT DISTINCT ON (s.product_id)
+             s.product_id, p.target_id, p.name, p.brand, p.last_seen_date,
+             s.stock_quantity, s.qty_basis
+      FROM inventory_snapshots s
+      JOIN products p ON p.id = s.product_id
+      WHERE NOT p.active
+        AND p.last_seen_date >= current_date - ($1::int - 1)
+        AND s.captured_date >= current_date - ($1::int - 1) ${targetFilter}
+      ORDER BY s.product_id, s.captured_date DESC
+    ),
+    disappearances AS (
+      SELECT ls.target_id, ls.product_id, ls.name, ls.brand,
+             ls.last_seen_date AS captured_date,
+             ls.stock_quantity AS sold, 'exact' AS basis
+      FROM last_snap ls
+      JOIN target_latest tl
+        ON tl.target_id = ls.target_id AND ls.last_seen_date < tl.latest_date
+      WHERE ls.qty_basis = 'exact' AND ls.stock_quantity > 0
+    ),
+    units AS (
+      SELECT * FROM drops
+      UNION ALL
+      SELECT * FROM disappearances
     )`;
 }
 
@@ -86,9 +122,9 @@ export async function compareMarketShare(pool: Pool, opts: { competitor: string;
     `SELECT p.target_id,
             count(*) FILTER (WHERE p.active) AS active_skus,
             count(DISTINCT p.brand) AS brands,
-            round(avg(lp.price)) AS avg_price,
-            round(min(lp.price)) AS min_price,
-            round(max(lp.price)) AS max_price
+            round(avg(lp.price) FILTER (WHERE p.active)) AS avg_price,
+            round(min(lp.price) FILTER (WHERE p.active)) AS min_price,
+            round(max(lp.price) FILTER (WHERE p.active)) AS max_price
      FROM products p
      LEFT JOIN LATERAL (
        SELECT price FROM prices pr WHERE pr.product_id = p.id ORDER BY captured_date DESC LIMIT 1
@@ -200,7 +236,7 @@ export async function competitorAds(pool: Pool, args: { competitor?: string; day
     `WITH latest AS (
        SELECT target_id, max(captured_date) AS latest_date
        FROM ad_observations
-       WHERE captured_date >= current_date - $1::int ${targetFilter.replace(/a\./g, "")}
+       WHERE captured_date >= current_date - ($1::int - 1) ${targetFilter.replace(/a\./g, "")}
        GROUP BY target_id
      )
      SELECT a.target_id,
@@ -219,7 +255,7 @@ export async function competitorAds(pool: Pool, args: { competitor?: string; day
     `WITH latest AS (
        SELECT target_id, max(captured_date) AS latest_date
        FROM ad_observations
-       WHERE captured_date >= current_date - $1::int ${targetFilter.replace(/a\./g, "")}
+       WHERE captured_date >= current_date - ($1::int - 1) ${targetFilter.replace(/a\./g, "")}
        GROUP BY target_id
      )
      SELECT a.target_id, p.platform, count(*)::int AS ads
@@ -236,7 +272,7 @@ export async function competitorAds(pool: Pool, args: { competitor?: string; day
     `WITH latest AS (
        SELECT target_id, max(captured_date) AS latest_date
        FROM ad_observations
-       WHERE captured_date >= current_date - $1::int ${targetFilter.replace(/a\./g, "")}
+       WHERE captured_date >= current_date - ($1::int - 1) ${targetFilter.replace(/a\./g, "")}
        GROUP BY target_id
      ),
      ranked AS (
@@ -259,7 +295,7 @@ export async function competitorAds(pool: Pool, args: { competitor?: string; day
     `WITH latest AS (
        SELECT target_id, max(captured_date) AS latest_date
        FROM ad_observations
-       WHERE captured_date >= current_date - $1::int ${targetFilter.replace(/a\./g, "")}
+       WHERE captured_date >= current_date - ($1::int - 1) ${targetFilter.replace(/a\./g, "")}
        GROUP BY target_id
      ),
      ranked AS (
