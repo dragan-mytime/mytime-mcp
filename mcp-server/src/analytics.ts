@@ -628,6 +628,282 @@ export async function dataHealth(pool: Pool, opts: { competitor?: string } = {})
   };
 }
 
+// ---------------------------------------------------------------------------
+// E6: social_content — hashtag mining, posting heatmap, brand mentions
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract hashtags from a caption string using a unicode-aware regex.
+ * Returns lowercased tag for grouping + the original-case sample from first match.
+ */
+export function extractHashtags(caption: string): string[] {
+  // \p{L} and \p{N} require the /u flag for full Unicode support.
+  const re = /#[\p{L}\p{N}_]+/gu;
+  const matches = caption.match(re);
+  return matches ?? [];
+}
+
+interface SocialContentPostRow {
+  target_id: string;
+  caption: string | null;
+  engagement: number | null;
+  posted_at: string | null; // timestamptz as ISO string
+}
+
+interface SocialContentBrandRow {
+  brand: string;
+}
+
+/**
+ * Convert a Date to Europe/Skopje local { dow, hour }.
+ * dow: 0=Monday … 6=Sunday.
+ * Uses Intl.DateTimeFormat so it correctly handles CET (UTC+1) vs CEST (UTC+2)
+ * without any hardcoded offset — works in both production (pg) and tests (PGlite).
+ */
+function skopjeDowHour(d: Date): { dow: number; hour: number } {
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Europe/Skopje",
+    weekday: "short", // Mon, Tue, …
+    hour: "numeric",
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(d);
+  const weekdayStr = parts.find((p) => p.type === "weekday")?.value ?? "";
+  const hourStr = parts.find((p) => p.type === "hour")?.value ?? "0";
+
+  const weekdayMap: Record<string, number> = {
+    Mon: 0,
+    Tue: 1,
+    Wed: 2,
+    Thu: 3,
+    Fri: 4,
+    Sat: 5,
+    Sun: 6,
+  };
+  const dow = weekdayMap[weekdayStr] ?? 0;
+  // Intl hour12:false gives "0"-"23"; "24" can appear for midnight in some locales.
+  const hour = Number(hourStr) % 24;
+  return { dow, hour };
+}
+
+/**
+ * social_content — mines stored social post captions per competitor.
+ *
+ * Returns three blocks per target:
+ *   topHashtags    – top 10 hashtags by occurrence (count + avgEngagement + sample casing)
+ *   postingHeatmap – dow × hour in Europe/Skopje: count + avgEngagement, non-empty cells only;
+ *                    plus bestSlots (top 3 cells by avgEngagement with ≥2 posts)
+ *   brandMentions  – distinct active product brands (≥3 chars) matched case-insensitively as
+ *                    whole words in captions; mentionCount + avgEngagement
+ *
+ * Processing notes:
+ *   - Hashtag extraction is TS-side (small volumes, unicode regex /u flag).
+ *   - Heatmap timezone conversion is TS-side via Intl.DateTimeFormat (handles CET/CEST).
+ *   - Brand whole-word matching uses word-boundary regex (\b…\b) in TS.
+ *   - Caption text may be truncated (scrapers cap depth); unicode hashtag chars are preserved.
+ *   - Engagement definitions differ per platform: IG = likes+comments; FB = reactions+comments+shares;
+ *     TikTok = digg+comments+shares (same as socialPosts tool).
+ */
+export async function socialContent(
+  pool: Pool,
+  opts: { competitor?: string; platform?: string; days?: number },
+) {
+  const days = Math.min(opts.days ?? 30, 90);
+  const params: unknown[] = [days];
+  const conds: string[] = ["sp.posted_at >= now() - ($1 || ' days')::interval"];
+
+  if (opts.competitor) {
+    params.push(opts.competitor);
+    conds.push(`t.id = $${params.length}`);
+  }
+  if (opts.platform) {
+    params.push(opts.platform);
+    conds.push(`sa.platform = $${params.length}::social_platform`);
+  }
+
+  // Fetch posts — posted_at as UTC ISO string; timezone conversion done in TS.
+  const { rows: postRows } = await pool.query<SocialContentPostRow>(
+    `SELECT t.id AS target_id,
+            sp.caption,
+            sp.engagement,
+            sp.posted_at AS posted_at
+     FROM social_posts sp
+     JOIN social_accounts sa ON sa.id = sp.social_account_id
+     JOIN targets t ON t.id = sa.target_id
+     WHERE ${conds.join(" AND ")}`,
+    params,
+  );
+
+  // Fetch distinct active product brands (≥3 chars) for brand mention matching.
+  // Cap to active products; case will be preserved (raw brand value).
+  const { rows: brandRows } = await pool.query<SocialContentBrandRow>(
+    `SELECT DISTINCT brand FROM products
+     WHERE active AND brand IS NOT NULL AND length(brand) >= 3
+     ORDER BY brand`,
+  );
+  const allBrands = brandRows.map((r) => r.brand);
+
+  // Group posts by target
+  const byTarget = new Map<
+    string,
+    { caption: string | null; engagement: number | null; postedAt: string | null }[]
+  >();
+  for (const r of postRows) {
+    let arr = byTarget.get(r.target_id);
+    if (!arr) {
+      arr = [];
+      byTarget.set(r.target_id, arr);
+    }
+    arr.push({ caption: r.caption, engagement: r.engagement, postedAt: r.posted_at });
+  }
+
+  const results = [...byTarget.entries()].map(([targetId, posts]) => {
+    // ── 1. topHashtags ──────────────────────────────────────────────────────
+    const tagMap = new Map<
+      string,
+      { count: number; engagementSum: number; engagementPosts: number; sample: string }
+    >();
+
+    for (const post of posts) {
+      if (!post.caption) continue;
+      const tags = extractHashtags(post.caption);
+      const seen = new Set<string>(); // deduplicate within same caption
+      for (const rawTag of tags) {
+        const lower = rawTag.toLowerCase();
+        if (seen.has(lower)) continue;
+        seen.add(lower);
+        const existing = tagMap.get(lower);
+        if (existing) {
+          existing.count++;
+          if (post.engagement != null) {
+            existing.engagementSum += post.engagement;
+            existing.engagementPosts++;
+          }
+        } else {
+          tagMap.set(lower, {
+            count: 1,
+            engagementSum: post.engagement ?? 0,
+            engagementPosts: post.engagement != null ? 1 : 0,
+            sample: rawTag, // keep original casing from first encounter
+          });
+        }
+      }
+    }
+
+    const topHashtags = [...tagMap.entries()]
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 10)
+      .map(([tag, d]) => ({
+        tag,
+        sample: d.sample,
+        count: d.count,
+        avgEngagement:
+          d.engagementPosts > 0 ? Math.round(d.engagementSum / d.engagementPosts) : null,
+      }));
+
+    // ── 2. postingHeatmap ───────────────────────────────────────────────────
+    // dow: 0=Monday … 6=Sunday. Timezone conversion via Intl.DateTimeFormat.
+    const heatMap = new Map<
+      string,
+      { engagementSum: number; engagementPosts: number; count: number }
+    >();
+
+    for (const post of posts) {
+      if (!post.postedAt) continue;
+      const d = new Date(post.postedAt);
+      if (Number.isNaN(d.getTime())) continue;
+      const { dow, hour } = skopjeDowHour(d);
+      const key = `${dow}:${hour}`;
+      const cell = heatMap.get(key) ?? { engagementSum: 0, engagementPosts: 0, count: 0 };
+      cell.count++;
+      if (post.engagement != null) {
+        cell.engagementSum += post.engagement;
+        cell.engagementPosts++;
+      }
+      heatMap.set(key, cell);
+    }
+
+    const heatmapCells = [...heatMap.entries()].map(([key, cell]) => {
+      const [dowStr, hourStr] = key.split(":");
+      return {
+        dow: Number(dowStr),
+        hour: Number(hourStr),
+        count: cell.count,
+        avgEngagement:
+          cell.engagementPosts > 0 ? Math.round(cell.engagementSum / cell.engagementPosts) : null,
+      };
+    });
+
+    const bestSlots = [...heatmapCells]
+      .filter((c) => c.count >= 2 && c.avgEngagement != null)
+      .sort((a, b) => (b.avgEngagement ?? 0) - (a.avgEngagement ?? 0))
+      .slice(0, 3);
+
+    const postingHeatmap = {
+      cells: heatmapCells,
+      bestSlots,
+    };
+
+    // ── 3. brandMentions ────────────────────────────────────────────────────
+    const brandMentionMap = new Map<
+      string,
+      { count: number; engagementSum: number; engagementPosts: number }
+    >();
+
+    // Pre-build case-insensitive whole-word regexes for each brand
+    const brandPatterns: { brand: string; re: RegExp }[] = allBrands.map((brand) => ({
+      brand,
+      // Escape special regex chars in brand name
+      re: new RegExp(`\\b${brand.replace(/[$()*+.?[\\\]^{|}]/g, "\\$&")}\\b`, "iu"),
+    }));
+
+    for (const post of posts) {
+      if (!post.caption) continue;
+      for (const { brand, re } of brandPatterns) {
+        if (re.test(post.caption)) {
+          const existing = brandMentionMap.get(brand);
+          if (existing) {
+            existing.count++;
+            if (post.engagement != null) {
+              existing.engagementSum += post.engagement;
+              existing.engagementPosts++;
+            }
+          } else {
+            brandMentionMap.set(brand, {
+              count: 1,
+              engagementSum: post.engagement ?? 0,
+              engagementPosts: post.engagement != null ? 1 : 0,
+            });
+          }
+        }
+      }
+    }
+
+    const brandMentions = [...brandMentionMap.entries()]
+      .sort((a, b) => b[1].count - a[1].count)
+      .map(([brand, d]) => ({
+        brand,
+        mentionCount: d.count,
+        avgEngagement:
+          d.engagementPosts > 0 ? Math.round(d.engagementSum / d.engagementPosts) : null,
+      }));
+
+    return {
+      targetId,
+      postCount: posts.length,
+      topHashtags,
+      postingHeatmap,
+      brandMentions,
+    };
+  });
+
+  return {
+    note: "Caption-based analysis. Competitor captions come from scrapers (truncation possible at scraper depth cap). Heatmap in Europe/Skopje timezone (CET UTC+1 winter, CEST UTC+2 summer) via Intl.DateTimeFormat. dow: 0=Monday … 6=Sunday. Brand mentions: whole-word, case-insensitive, from active products ≥3-char brand names. Engagement per platform: IG = likes+comments; FB = reactions+comments+shares; TikTok = digg+comments+shares.",
+    windowDays: days,
+    results,
+  };
+}
+
 /** price_assortment — price ranges and assortment, by competitor/brand. */
 export async function priceAssortment(pool: Pool, opts: { competitor?: string; brand?: string }) {
   const params: unknown[] = [];

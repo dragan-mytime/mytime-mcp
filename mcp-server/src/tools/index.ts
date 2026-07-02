@@ -11,6 +11,7 @@ import {
   priceHistory,
   promoCalendar,
   socialBenchmark,
+  socialContent,
   socialPosts,
 } from "../analytics.js";
 import { listAuthorizedUsers } from "../auth/authorized-users.js";
@@ -130,6 +131,29 @@ export const tools: McpToolDef[] = [
         pool,
         a as { competitor?: string; platform?: string; days?: number; limit?: number },
       ),
+  },
+  {
+    name: "social_content",
+    title: "Social content analysis (hashtags, posting heatmap, brand mentions)",
+    description:
+      "Mines stored social post captions per competitor: top-10 hashtags by count + avg engagement, posting time heatmap (day-of-week × hour in Europe/Skopje) with best slots, and brand mentions (active product brands matched as whole words in captions). Use to discover trending topics, optimal posting times, and competitor brand promotion patterns.",
+    requiredRole: "analyst",
+    inputSchema: {
+      competitor: z.string().optional().describe("target id, e.g. 'b-watch'; omit for all"),
+      platform: z
+        .enum(["instagram", "facebook", "tiktok"])
+        .optional()
+        .describe("filter to one platform"),
+      days: z
+        .number()
+        .int()
+        .positive()
+        .max(90)
+        .optional()
+        .describe("lookback window in days (default 30, max 90)"),
+    },
+    run: (pool, a) =>
+      socialContent(pool, a as { competitor?: string; platform?: string; days?: number }),
   },
   {
     name: "price_assortment",
