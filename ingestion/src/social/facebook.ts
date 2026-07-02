@@ -57,6 +57,48 @@ const num = (...xs: (number | undefined)[]): number | null => {
 };
 
 /**
+ * FB path segments that are routing keywords, never page handles. A post URL
+ * like /pagename/posts/123 contains "posts"; matching must skip these so a
+ * keyword is never mistaken for a handle (and vice versa).
+ */
+const FB_PATH_KEYWORDS = new Set([
+  "posts",
+  "videos",
+  "photos",
+  "photo",
+  "photo.php",
+  "reel",
+  "reels",
+  "permalink.php",
+  "story.php",
+  "profile.php",
+  "watch",
+  "share",
+  "events",
+  "groups",
+  "p",
+]);
+
+/** Lowercased path segments of an FB URL (any subdomain), or [] if unparseable. */
+function fbPathSegments(raw: string): string[] {
+  try {
+    return new URL(raw).pathname.toLowerCase().split("/").filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * True when `handle` appears as an EXACT path segment of the URL (A7).
+ * Never substring matching — "page" must not match /pagename/posts/1 — and FB
+ * routing keywords are never treated as handles.
+ */
+export function urlMatchesHandle(raw: string, handle: string): boolean {
+  if (!handle || FB_PATH_KEYWORDS.has(handle)) return false;
+  return fbPathSegments(raw).some((seg) => seg === handle && !FB_PATH_KEYWORDS.has(seg));
+}
+
+/**
  * Normalize a FB post URL used as an external id: canonical host, no query
  * params, no hash, no trailing slash. Avoids duplicate rows when the same post
  * appears with tracking params or m.facebook.com variants across runs (A8).
@@ -139,51 +181,37 @@ export const facebookCollector: SocialCollector = {
     } catch {
       // Posts scraper failure is non-fatal; page metrics still write.
     }
-    // A7: track unmatched page-scraper items for logging.
+    // A7: track unmatched page- and post-scraper items for logging.
     const unmatchedPageItems = new Set(items.map((_, idx) => idx));
+    const unmatchedPostItems = new Set(postItems.map((_, idx) => idx));
     const results = accounts.flatMap((a) => {
       const handle = a.handle.toLowerCase();
-      // A7: match by exact URL comparison against canonical host fields first,
-      // then fall back to pageName. NEVER positional index, NEVER substring includes.
+      // A7: match a page item when the handle is an exact URL path segment of
+      // any of its URL fields, or equals its pageName. NEVER positional index,
+      // NEVER substring includes on the whole URL.
       const itIdx = items.findIndex((p) => {
         const fields = [p.pageUrl, p.facebookUrl, p.url].filter(Boolean) as string[];
         return (
-          fields.some((f) => {
-            try {
-              const u = new URL(f);
-              u.hostname = "www.facebook.com";
-              const normalized = u.toString().replace(/\/+$/, "").toLowerCase();
-              // Match if the handle equals the last URL path segment.
-              const lastSeg = normalized.split("/").pop() ?? "";
-              return lastSeg === handle;
-            } catch {
-              return false;
-            }
-          }) || p.pageName?.toLowerCase() === handle
+          fields.some((f) => urlMatchesHandle(f, handle)) || p.pageName?.toLowerCase() === handle
         );
       });
       const it = itIdx >= 0 ? items[itIdx] : undefined;
       if (it !== undefined) unmatchedPageItems.delete(itIdx);
 
-      // A7: match posts by facebookId echo or exact URL (not substring).
-      const acctPosts = postItems.filter((p) => {
-        if (p.facebookId && p.facebookId.toLowerCase() === handle) return true;
-        const postUrlFields = [p.facebookUrl, p.pageUrl, p.postUrl, p.url].filter(
-          Boolean,
-        ) as string[];
-        return postUrlFields.some((f) => {
-          try {
-            const u = new URL(f);
-            u.hostname = "www.facebook.com";
-            const normalized = u.toString().replace(/\/+$/, "").toLowerCase();
-            const seg = normalized.split("/").pop() ?? "";
-            // For post-level URLs the second-to-last segment is the page handle.
-            const segs = normalized.split("/").filter(Boolean);
-            return seg === handle || segs[segs.length - 2] === handle;
-          } catch {
-            return false;
-          }
-        });
+      // A7: match posts by the actor's echoed page identifier (facebookId /
+      // pageName) or by the handle appearing as an exact path segment of any
+      // URL field (covers /pagename/posts/123 and page-URL echoes). Numeric
+      // permalink.php URLs have no handle segment → unmatched → logged below.
+      const acctPosts: FbPost[] = [];
+      postItems.forEach((p, idx) => {
+        const byEcho =
+          (p.facebookId && p.facebookId.toLowerCase() === handle) ||
+          p.pageName?.toLowerCase() === handle;
+        const urlFields = [p.facebookUrl, p.pageUrl, p.postUrl, p.url].filter(Boolean) as string[];
+        if (byEcho || urlFields.some((f) => urlMatchesHandle(f, handle))) {
+          acctPosts.push(p);
+          unmatchedPostItems.delete(idx);
+        }
       });
 
       const followers = it
@@ -197,7 +225,23 @@ export const facebookCollector: SocialCollector = {
     if (unmatchedPageItems.size > 0) {
       console.warn(
         `[fb-collector] ${unmatchedPageItems.size} page-scraper items could not be matched to any account:`,
-        [...unmatchedPageItems].map((i) => fbFields(items[i])).join("; "),
+        [...unmatchedPageItems]
+          .map((i) => {
+            const p = items[i];
+            return p ? fbFields(p) : "?";
+          })
+          .join("; "),
+      );
+    }
+    if (unmatchedPostItems.size > 0) {
+      console.warn(
+        `[fb-collector] ${unmatchedPostItems.size} post-scraper items could not be matched to any account:`,
+        [...unmatchedPostItems]
+          .map((i) => {
+            const p = postItems[i];
+            return p ? (p.postUrl ?? p.url ?? p.postId ?? "?") : "?";
+          })
+          .join("; "),
       );
     }
 

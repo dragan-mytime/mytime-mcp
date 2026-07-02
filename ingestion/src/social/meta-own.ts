@@ -129,10 +129,15 @@ export interface OwnBrandSocialResult {
  */
 export async function collectOwnBrandMeta(): Promise<OwnBrandSocialResult[]> {
   const out: OwnBrandSocialResult[] = [];
+  // A5: per-platform failures are collected; one platform failing must not
+  // abort the other. But if EVERY configured platform failed, throw so the
+  // runner records a failed run instead of a silent empty success.
+  const failures: string[] = [];
+  let configured = 0;
 
-  // A5: each platform block is fully isolated — an IG error must NOT abort FB collection.
   const igId = optionalEnv("META_IG_USER_ID");
   if (igId) {
+    configured++;
     try {
       const ig = await graphGet(igId, "followers_count,follows_count,media_count");
       const m: SocialMetricValue[] = [];
@@ -166,11 +171,13 @@ export async function collectOwnBrandMeta(): Promise<OwnBrandSocialResult[]> {
       if (m.length || posts.length) out.push({ platform: "instagram", metrics: m, posts });
     } catch (err) {
       console.error("[meta-own] IG account fetch failed — skipping IG, continuing to FB:", err);
+      failures.push(`instagram: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
   const pageId = optionalEnv("META_PAGE_ID");
   if (pageId) {
+    configured++;
     try {
       const fb = await graphGet(pageId, "followers_count,fan_count");
       const m: SocialMetricValue[] = [];
@@ -216,7 +223,14 @@ export async function collectOwnBrandMeta(): Promise<OwnBrandSocialResult[]> {
         out.push({ platform: "facebook", metrics: m, posts: fbPosts });
     } catch (err) {
       console.error("[meta-own] FB page fetch failed — skipping FB:", err);
+      failures.push(`facebook: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  // All configured platforms failed → surface it as a run failure (partial
+  // success — at least one platform collected — still returns normally).
+  if (configured > 0 && failures.length === configured) {
+    throw new Error(`meta-own: all configured platforms failed — ${failures.join("; ")}`);
   }
 
   return out;

@@ -182,7 +182,7 @@ describe("writeSocialPosts upsert semantics (A4)", () => {
     ]);
     const row = await getPost("null-likes-test");
     expect(row?.likes).toBe(50); // still 50, not null
-    expect(row?.engagement).toBe(55); // recomputed from coalesced counters: 50+5+0
+    expect(row?.engagement).toBe(55); // incoming NULL engagement keeps the existing value
   });
 
   it("A4c: genuine new counter values do update", async () => {
@@ -226,7 +226,36 @@ describe("writeSocialPosts upsert semantics (A4)", () => {
     expect(row?.likes).toBe(20); // updated
     expect(row?.comments).toBe(3); // updated
     expect(row?.shares).toBe(2); // updated from null
-    expect(row?.engagement).toBe(25); // recomputed: 20+3+2
+    expect(row?.engagement).toBe(25); // mapper-provided value taken as-is
+  });
+
+  it("B4 parity: re-upsert of an own-IG-shaped row keeps mapper engagement (likes+comments, shares excluded)", async () => {
+    // Own-IG mapper (mapIgOwnPost) computes engagement = likes+comments and
+    // stores shares separately. The SQL must NOT recompute likes+comments+shares.
+    const ownIgRow = {
+      externalPostId: "own-ig-post",
+      postedAt: "2026-06-30T10:00:00Z",
+      postType: "image",
+      caption: null,
+      permalink: null,
+      mediaUrl: null,
+      mediaUrls: null,
+      likes: 10,
+      comments: 2,
+      shares: 100, // non-null shares stored, but excluded from engagement
+      views: null,
+      engagement: 12, // mapper's B4 formula: 10 + 2
+      estimatedReach: 5000,
+      reachSource: "measured",
+    };
+    await writeSocialPosts(db as never, ACCT, "2026-07-01", [ownIgRow]);
+    expect((await getPost("own-ig-post"))?.engagement).toBe(12);
+
+    // Re-upsert the same row (next day's run) — engagement must stay 12, not become 112.
+    await writeSocialPosts(db as never, ACCT, "2026-07-02", [ownIgRow]);
+    const row = await getPost("own-ig-post");
+    expect(row?.engagement).toBe(12);
+    expect(row?.shares).toBe(100);
   });
 });
 

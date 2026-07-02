@@ -343,19 +343,11 @@ export async function writeSocialPosts(
           comments: sql`COALESCE(excluded.comments, social_posts.comments)`,
           shares: sql`COALESCE(excluded.shares, social_posts.shares)`,
           views: sql`COALESCE(excluded.views, social_posts.views)`,
-          // Engagement: recompute from the coalesced counters so it never
-          // null-out a previously non-null value (likes+comments+shares,
-          // NULL only when all three coalesce to NULL).
-          engagement: sql`
-            CASE
-              WHEN COALESCE(excluded.likes, social_posts.likes) IS NULL
-               AND COALESCE(excluded.comments, social_posts.comments) IS NULL
-               AND COALESCE(excluded.shares, social_posts.shares) IS NULL
-              THEN NULL
-              ELSE COALESCE(COALESCE(excluded.likes, social_posts.likes), 0)
-                 + COALESCE(COALESCE(excluded.comments, social_posts.comments), 0)
-                 + COALESCE(COALESCE(excluded.shares, social_posts.shares), 0)
-            END`,
+          // Engagement: each platform's MAPPER is the single source of the
+          // engagement formula (they differ — e.g. own IG excludes shares, B4),
+          // so never recompute it in SQL. Take the incoming value; COALESCE so
+          // an incoming NULL never wipes a previously non-null engagement.
+          engagement: sql`COALESCE(excluded.engagement, social_posts.engagement)`,
           // Reach: keep measured over estimate — never downgrade.
           estimatedReach: sql`
             CASE

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { mapFbActions, mapIgOwnPost } from "../../src/social/meta-own.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { collectOwnBrandMeta, mapFbActions, mapIgOwnPost } from "../../src/social/meta-own.js";
 
 describe("mapFbActions", () => {
   it("splits organic action counts into likes/comments/shares + engagement", () => {
@@ -58,5 +58,49 @@ describe("mapIgOwnPost reach basis", () => {
     );
     expect(p.engagement).toBeNull();
     expect(p.shares).toBe(5);
+  });
+});
+
+describe("collectOwnBrandMeta failure signaling (T3a review)", () => {
+  const jsonRes = (body: unknown) => ({ json: async () => body });
+
+  beforeEach(() => {
+    vi.stubEnv("META_ACCESS_TOKEN", "test-token");
+    vi.stubEnv("META_IG_USER_ID", "ig123");
+    vi.stubEnv("META_PAGE_ID", "pg456");
+    // Silence the expected per-platform error logs.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("throws an aggregate error when BOTH configured platforms fail", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonRes({ error: { message: "token expired" } })),
+    );
+    await expect(collectOwnBrandMeta()).rejects.toThrow(/all configured platforms failed/);
+    await expect(collectOwnBrandMeta()).rejects.toThrow(/instagram: .*token expired/);
+    await expect(collectOwnBrandMeta()).rejects.toThrow(/facebook: .*token expired/);
+  });
+
+  it("returns partial results (no throw) when only IG fails and FB succeeds", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.includes("/ig123")) return jsonRes({ error: { message: "ig down" } });
+        if (u.includes("/pg456/published_posts")) return jsonRes({ data: [] });
+        if (u.includes("/pg456")) return jsonRes({ followers_count: 42, fan_count: 40 });
+        return jsonRes({ error: { message: "unexpected node" } });
+      }),
+    );
+    const res = await collectOwnBrandMeta();
+    expect(res).toHaveLength(1);
+    expect(res[0].platform).toBe("facebook");
+    expect(res[0].metrics.find((m) => m.metric === "followers")?.value).toBe(42);
   });
 });
