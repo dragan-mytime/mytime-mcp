@@ -14,6 +14,7 @@ import {
 import { logger, optionalEnv, requireEnv } from "@mytime/shared";
 import { collectCompetitorAds } from "./ads/meta-ads.js";
 import { skopjeDate } from "./pipeline/dates.js";
+import { deactivationDecision, type ProductCollectOutcome } from "./pipeline/deactivation.js";
 import { extractHandle } from "./social/_social.js";
 import { socialCollectors } from "./social/index.js";
 import { collectOwnBrandMeta } from "./social/meta-own.js";
@@ -59,11 +60,11 @@ export async function run(runDate: string = skopjeDate()): Promise<RunSummary> {
 
   // Per-target product-collect outcomes, so deactivation (below) runs once per
   // target and only when every product collector that ran for it succeeded.
-  const productOutcomes = new Map<string, { succeeded: number; failed: number }>();
+  const productOutcomes = new Map<string, ProductCollectOutcome>();
   const outcomeFor = (id: string) => {
     let o = productOutcomes.get(id);
     if (!o) {
-      o = { succeeded: 0, failed: 0 };
+      o = { succeeded: 0, failed: 0, rows: 0 };
       productOutcomes.set(id, o);
     }
     return o;
@@ -82,7 +83,9 @@ export async function run(runDate: string = skopjeDate()): Promise<RunSummary> {
         const rows = await writeObservations(db, target, locationId, runDate, collector.id, obs);
         summary.succeeded++;
         summary.rows += rows;
-        outcomeFor(target.id).succeeded++;
+        const outcome = outcomeFor(target.id);
+        outcome.succeeded++;
+        outcome.rows += rows;
         await recordRun(db, {
           runDate,
           collector: collector.id,
@@ -116,9 +119,18 @@ export async function run(runDate: string = skopjeDate()): Promise<RunSummary> {
 
   // ── Deactivate products missing from today's successful product collects ──
   // Once per target; skipped when any of the target's product collectors failed
-  // (a failed collect must not deactivate the rows it would have refreshed).
+  // (a failed collect must not deactivate the rows it would have refreshed) or
+  // when zero products were observed (an empty feed must not wipe the catalog).
   for (const [targetId, o] of productOutcomes) {
-    if (o.succeeded === 0 || o.failed > 0) continue;
+    const decision = deactivationDecision(o);
+    if (decision === "skip-failed") continue;
+    if (decision === "skip-zero-rows") {
+      logger.warn(
+        { targetId, reason: "zero products collected — deactivation skipped" },
+        "product deactivation skipped",
+      );
+      continue;
+    }
     try {
       const deactivated = await deactivateMissingProducts(db, targetId, runDate);
       logger.info({ targetId, deactivated }, "deactivated products missing from feed");
