@@ -29,6 +29,9 @@ function competitorBlock(c: CompetitorDigest, lang: "en" | "mk"): string {
   const newProductsLabel = isEn ? "New products" : "Нови производи";
   const stockoutsLabel = isEn ? "New stockouts" : "Ново без залихи";
   const priceMovesLabel = isEn ? "Price moves (>5%)" : "Промени на цени (>5%)";
+  const undercutsLabel = isEn ? "Price undercuts" : "Пониски цени од нашите";
+  const newlyUndercutLabel = isEn ? "Newly undercut" : "Ново подбиени";
+  const resolvedLabel = isEn ? "Resolved" : "Разрешени";
   const noDataLabel = isEn ? "none" : "нема";
 
   // E3: a stale collector family means zeros are "no fresh data", not inactivity.
@@ -94,6 +97,32 @@ function competitorBlock(c: CompetitorDigest, lang: "en" | "mk"): string {
   <li>${priceMovesLabel}: <ul>${priceMoveLines}</ul></li>
 </ul>`;
 
+  // E2: price undercuts — derived from prices, so it shares the products
+  // freshness gate. Optional-chained for digests serialized before the field existed.
+  const undercuts = c.priceUndercuts;
+  const undercutItem = (u: {
+    ref: string;
+    name: string;
+    mtPrice: number;
+    compPrice: number;
+    deltaPct: number | null;
+  }) =>
+    `<li>${esc(u.name)} (${esc(u.ref)}): ${isEn ? "us" : "ние"} ${u.mtPrice} ${isEn ? "vs" : "нс."} ${u.compPrice}${u.deltaPct != null ? ` (${u.deltaPct}%)` : ""}</li>`;
+  const newlyUndercutLines =
+    undercuts && undercuts.newlyUndercut.length > 0
+      ? undercuts.newlyUndercut.map(undercutItem).join("")
+      : `<li>${noDataLabel}</li>`;
+  const resolvedLines =
+    undercuts && undercuts.resolved.length > 0
+      ? undercuts.resolved.map(undercutItem).join("")
+      : `<li>${noDataLabel}</li>`;
+  const undercutsBlock = freshness.products.stale
+    ? staleLine(freshness.products)
+    : `<ul>
+  <li>${newlyUndercutLabel}: ${undercuts?.totalNewlyUndercut ?? 0} <ul>${newlyUndercutLines}</ul></li>
+  <li>${resolvedLabel}: ${undercuts?.totalResolved ?? 0} <ul>${resolvedLines}</ul></li>
+</ul>`;
+
   return `
 <h3>${esc(c.targetId)}</h3>
 <h4>${salesLabel}</h4>
@@ -103,7 +132,9 @@ ${adsBlock}
 <h4>${socialLabel}</h4>
 ${socialBlock}
 <h4>${inventoryLabel}</h4>
-${inventoryBlock}`;
+${inventoryBlock}
+<h4>${undercutsLabel}</h4>
+${undercutsBlock}`;
 }
 
 /** Deterministic bilingual fallback (EN then MK) used when Gemini is unavailable. */

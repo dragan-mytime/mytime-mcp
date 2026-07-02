@@ -686,11 +686,13 @@ async function queryPriceUndercuts(
         ${filterClause}
     ),
 
-    -- Match: one coherent MT row + one coherent competitor row per key
+    -- Match: one coherent MT row + one coherent competitor row per key.
+    -- Cheapest-variant tiebreak (eff ASC) — same rule as compareSkus (B8).
     mt_by_key AS (
-      SELECT DISTINCT ON (key) key, name, bkey, product_id
-      FROM mt_norm
-      ORDER BY key
+      SELECT DISTINCT ON (n.key) n.key, n.name, n.bkey, n.product_id, mlp.eff
+      FROM mt_norm n
+      JOIN mt_latest_price mlp ON mlp.product_id = n.product_id
+      ORDER BY n.key, mlp.eff ASC
     ),
     comp_today_by_key AS (
       SELECT DISTINCT ON (target_id, key) target_id, key, name, brand, bkey, eff, product_id
@@ -711,12 +713,11 @@ async function queryPriceUndercuts(
         mt.key,
         ct.name,
         ct.brand,
-        mlp.eff                  AS mt_price_today,
+        mt.eff                   AS mt_price_today,
         ct.eff                   AS comp_price_today,
         mlp_prior.eff_p          AS mt_price_prior,
         cp.eff                   AS comp_price_prior
       FROM mt_by_key mt
-      JOIN mt_latest_price mlp ON mlp.product_id = mt.product_id
       -- MT prior price (best available from any captured_date in prior dates across all competitors)
       LEFT JOIN LATERAL (
         SELECT COALESCE(pr.sale_price, pr.price)::float8 AS eff_p
