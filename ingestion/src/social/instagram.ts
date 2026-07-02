@@ -37,7 +37,11 @@ function metrics(p: IgProfile): SocialMetricValue[] {
 
   const posts = Array.isArray(p.latestPosts) ? p.latestPosts : [];
   if (posts.length) {
-    const eng = posts.map((x) => (x.likesCount ?? 0) + (x.commentsCount ?? 0));
+    // A9: Apify returns likesCount=-1 when the profile hides likes. Guard: treat as null.
+    const eng = posts.map((x) => {
+      const likes = typeof x.likesCount === "number" && x.likesCount >= 0 ? x.likesCount : 0;
+      return likes + (x.commentsCount ?? 0);
+    });
     out.push({
       metric: "avg_post_engagement",
       value: Math.round(eng.reduce((a, b) => a + b, 0) / eng.length),
@@ -70,7 +74,10 @@ export function mapIgPosts(p: {
   return (p.latestPosts ?? []).flatMap((post) => {
     const id = post.shortCode ?? post.id;
     if (!id) return [];
-    const likes = post.likesCount ?? null;
+    // A9: Apify returns likesCount=-1 when the profile hides likes. Treat as null
+    // so it doesn't poison averages: engagement = comments only when likes hidden.
+    const likes =
+      typeof post.likesCount === "number" && post.likesCount >= 0 ? post.likesCount : null;
     const comments = post.commentsCount ?? null;
     const views = post.videoViewCount ?? null;
     // null only when no interaction data at all (IG can hide like counts publicly).

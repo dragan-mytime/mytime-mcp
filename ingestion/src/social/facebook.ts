@@ -4,6 +4,7 @@ import {
   type SocialAccountRef,
   type SocialCollector,
   type SocialResult,
+  toDateOrNull,
 } from "./_social.js";
 import { estimateReach } from "./reach.js";
 
@@ -30,6 +31,10 @@ interface FbPost {
   postId?: string;
   postUrl?: string;
   url?: string;
+  facebookUrl?: string; // posts scraper may echo the page URL here
+  pageUrl?: string; // alt field for page URL
+  facebookId?: string; // numeric page id (apify~facebook-posts-scraper)
+  pageName?: string;
   text?: string;
   message?: string;
   time?: string;
@@ -51,11 +56,35 @@ const num = (...xs: (number | undefined)[]): number | null => {
   return null;
 };
 
+/**
+ * Normalize a FB post URL used as an external id: canonical host, no query
+ * params, no hash, no trailing slash. Avoids duplicate rows when the same post
+ * appears with tracking params or m.facebook.com variants across runs (A8).
+ */
+export function normalizeFbPostUrl(rawUrl: string): string {
+  try {
+    const u = new URL(rawUrl);
+    // Force canonical host regardless of m./l./touch. subdomains.
+    u.hostname = "www.facebook.com";
+    u.search = "";
+    u.hash = "";
+    return u.toString().replace(/\/$/, "");
+  } catch {
+    return rawUrl;
+  }
+}
+
 /** Map FB page posts → posts. Total reactions (sum across types) becomes `likes`. */
 export function mapFbPosts(items: FbPost[], followers: number | null): SocialPostObservation[] {
   return items.flatMap((it) => {
-    const id = it.postId ?? it.postUrl ?? it.url;
-    if (!id) return [];
+    // A8: prefer the stable postId; only fall back to a URL if there is no id,
+    // and normalise the URL to prevent duplicates across tracking-param variants.
+    const rawUrl = it.postUrl ?? it.url ?? null;
+    const id = it.postId ?? (rawUrl ? normalizeFbPostUrl(rawUrl) : null);
+    if (!id) {
+      console.warn("[fb-mapper] dropping post with no id and no url");
+      return [];
+    }
     const reactions =
       it.reactionsCount ??
       (it.reactions ? Object.values(it.reactions).reduce((a, b) => a + (b ?? 0), 0) : undefined);
@@ -73,7 +102,8 @@ export function mapFbPosts(items: FbPost[], followers: number | null): SocialPos
     return [
       {
         externalPostId: String(id),
-        postedAt: it.time ?? it.timestamp ?? it.date ?? null,
+        // A6: guard against locale-formatted or unparseable date strings.
+        postedAt: toDateOrNull(it.time ?? it.timestamp ?? it.date ?? null)?.toISOString() ?? null,
         postType: it.video ? "video" : "image",
         caption: it.text ?? it.message ?? null,
         permalink: it.postUrl ?? it.url ?? null,
@@ -109,15 +139,53 @@ export const facebookCollector: SocialCollector = {
     } catch {
       // Posts scraper failure is non-fatal; page metrics still write.
     }
-    return accounts.flatMap((a, i) => {
+    // A7: track unmatched page-scraper items for logging.
+    const unmatchedPageItems = new Set(items.map((_, idx) => idx));
+    const results = accounts.flatMap((a) => {
       const handle = a.handle.toLowerCase();
-      // Match by handle in any URL/name field; fall back to positional match.
-      const it =
-        items.find((p) => fbFields(p).includes(handle)) ??
-        (items.length === accounts.length ? items[i] : undefined);
-      const acctPosts = postItems.filter((p) =>
-        `${p.postUrl ?? ""} ${p.url ?? ""}`.toLowerCase().includes(handle),
-      );
+      // A7: match by exact URL comparison against canonical host fields first,
+      // then fall back to pageName. NEVER positional index, NEVER substring includes.
+      const itIdx = items.findIndex((p) => {
+        const fields = [p.pageUrl, p.facebookUrl, p.url].filter(Boolean) as string[];
+        return (
+          fields.some((f) => {
+            try {
+              const u = new URL(f);
+              u.hostname = "www.facebook.com";
+              const normalized = u.toString().replace(/\/+$/, "").toLowerCase();
+              // Match if the handle equals the last URL path segment.
+              const lastSeg = normalized.split("/").pop() ?? "";
+              return lastSeg === handle;
+            } catch {
+              return false;
+            }
+          }) || p.pageName?.toLowerCase() === handle
+        );
+      });
+      const it = itIdx >= 0 ? items[itIdx] : undefined;
+      if (it !== undefined) unmatchedPageItems.delete(itIdx);
+
+      // A7: match posts by facebookId echo or exact URL (not substring).
+      const acctPosts = postItems.filter((p) => {
+        if (p.facebookId && p.facebookId.toLowerCase() === handle) return true;
+        const postUrlFields = [p.facebookUrl, p.pageUrl, p.postUrl, p.url].filter(
+          Boolean,
+        ) as string[];
+        return postUrlFields.some((f) => {
+          try {
+            const u = new URL(f);
+            u.hostname = "www.facebook.com";
+            const normalized = u.toString().replace(/\/+$/, "").toLowerCase();
+            const seg = normalized.split("/").pop() ?? "";
+            // For post-level URLs the second-to-last segment is the page handle.
+            const segs = normalized.split("/").filter(Boolean);
+            return seg === handle || segs[segs.length - 2] === handle;
+          } catch {
+            return false;
+          }
+        });
+      });
+
       const followers = it
         ? (metrics(it).find((mm) => mm.metric === "followers")?.value ?? null)
         : null;
@@ -125,5 +193,14 @@ export const facebookCollector: SocialCollector = {
         ? [{ targetId: a.targetId, metrics: metrics(it), posts: mapFbPosts(acctPosts, followers) }]
         : [];
     });
+
+    if (unmatchedPageItems.size > 0) {
+      console.warn(
+        `[fb-collector] ${unmatchedPageItems.size} page-scraper items could not be matched to any account:`,
+        [...unmatchedPageItems].map((i) => fbFields(items[i])).join("; "),
+      );
+    }
+
+    return results;
   },
 };

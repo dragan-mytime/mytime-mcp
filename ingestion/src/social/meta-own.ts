@@ -91,10 +91,10 @@ export function mapIgOwnPost(
   const isVideo = String(post.media_type ?? "")
     .toUpperCase()
     .includes("VIDEO");
-  const engagement =
-    likes === null && comments === null && shares === null
-      ? null
-      : (likes ?? 0) + (comments ?? 0) + (shares ?? 0);
+  // B4: own IG engagement = likes+comments only (same definition as competitor IG) so
+  // own vs competitor comparisons in social_benchmark are unbiased. Shares are still
+  // stored in the `shares` column but excluded from the engagement sum.
+  const engagement = likes === null && comments === null ? null : (likes ?? 0) + (comments ?? 0);
   const measured = ins.reach != null;
   const est = estimateReach("instagram", ins.views, followers);
   return {
@@ -130,80 +130,93 @@ export interface OwnBrandSocialResult {
 export async function collectOwnBrandMeta(): Promise<OwnBrandSocialResult[]> {
   const out: OwnBrandSocialResult[] = [];
 
+  // A5: each platform block is fully isolated — an IG error must NOT abort FB collection.
   const igId = optionalEnv("META_IG_USER_ID");
   if (igId) {
-    const ig = await graphGet(igId, "followers_count,follows_count,media_count");
-    const m: SocialMetricValue[] = [];
-    if (typeof ig.followers_count === "number")
-      m.push({ metric: "followers", value: ig.followers_count });
-    if (typeof ig.follows_count === "number")
-      m.push({ metric: "following", value: ig.follows_count });
-    if (typeof ig.media_count === "number") m.push({ metric: "posts", value: ig.media_count });
-    const igFollowers = typeof ig.followers_count === "number" ? ig.followers_count : null;
-    const posts: SocialPostObservation[] = [];
     try {
-      const mediaRes = await graphGet(
-        `${igId}/media`,
-        "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count",
-      );
-      const media = Array.isArray((mediaRes as { data?: unknown[] }).data)
-        ? (mediaRes as { data: Record<string, unknown>[] }).data.slice(0, 25)
-        : [];
-      for (const post of media) {
-        const ins = {
-          reach: await graphInsight(String(post.id), "reach"),
-          views: await graphInsight(String(post.id), "views"),
-          shares: await graphInsight(String(post.id), "shares"),
-        };
-        posts.push(mapIgOwnPost(post as never, ins, igFollowers));
+      const ig = await graphGet(igId, "followers_count,follows_count,media_count");
+      const m: SocialMetricValue[] = [];
+      if (typeof ig.followers_count === "number")
+        m.push({ metric: "followers", value: ig.followers_count });
+      if (typeof ig.follows_count === "number")
+        m.push({ metric: "following", value: ig.follows_count });
+      if (typeof ig.media_count === "number") m.push({ metric: "posts", value: ig.media_count });
+      const igFollowers = typeof ig.followers_count === "number" ? ig.followers_count : null;
+      const posts: SocialPostObservation[] = [];
+      try {
+        const mediaRes = await graphGet(
+          `${igId}/media`,
+          "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count",
+        );
+        const media = Array.isArray((mediaRes as { data?: unknown[] }).data)
+          ? (mediaRes as { data: Record<string, unknown>[] }).data.slice(0, 25)
+          : [];
+        for (const post of media) {
+          const ins = {
+            reach: await graphInsight(String(post.id), "reach"),
+            views: await graphInsight(String(post.id), "views"),
+            shares: await graphInsight(String(post.id), "shares"),
+          };
+          posts.push(mapIgOwnPost(post as never, ins, igFollowers));
+        }
+      } catch (err) {
+        // media/insights unavailable for some accounts/media types — account metrics still write.
+        console.warn("[meta-own] IG media/insights failed (account metrics preserved):", err);
       }
-    } catch {
-      // media/insights unavailable for some accounts/media types — metrics still write.
+      if (m.length || posts.length) out.push({ platform: "instagram", metrics: m, posts });
+    } catch (err) {
+      console.error("[meta-own] IG account fetch failed — skipping IG, continuing to FB:", err);
     }
-    if (m.length || posts.length) out.push({ platform: "instagram", metrics: m, posts });
   }
 
   const pageId = optionalEnv("META_PAGE_ID");
   if (pageId) {
-    const fb = await graphGet(pageId, "followers_count,fan_count");
-    const m: SocialMetricValue[] = [];
-    if (typeof fb.followers_count === "number")
-      m.push({ metric: "followers", value: fb.followers_count });
-    if (typeof fb.fan_count === "number") m.push({ metric: "likes", value: fb.fan_count });
-    const fbPosts: SocialPostObservation[] = [];
     try {
-      const res = await graphGet(
-        `${pageId}/published_posts`,
-        "id,message,created_time,permalink_url,full_picture",
-      );
-      const items = Array.isArray((res as { data?: unknown[] }).data)
-        ? (res as { data: Record<string, unknown>[] }).data.slice(0, 25)
-        : [];
-      const fbFollowers = typeof fb.followers_count === "number" ? fb.followers_count : null;
-      for (const post of items) {
-        const acts = (await graphInsightObj(String(post.id), "post_activity_by_action_type")) ?? {};
-        const e = mapFbActions(acts, fbFollowers);
-        fbPosts.push({
-          externalPostId: String(post.id),
-          postedAt: (post.created_time as string) ?? null,
-          postType: "image",
-          caption: (post.message as string) ?? null,
-          permalink: (post.permalink_url as string) ?? null,
-          mediaUrl: (post.full_picture as string) ?? null,
-          mediaUrls: null,
-          likes: e.likes,
-          comments: e.comments,
-          shares: e.shares,
-          views: null,
-          engagement: e.engagement,
-          estimatedReach: e.estimatedReach,
-          reachSource: e.reachSource,
-        });
+      const fb = await graphGet(pageId, "followers_count,fan_count");
+      const m: SocialMetricValue[] = [];
+      if (typeof fb.followers_count === "number")
+        m.push({ metric: "followers", value: fb.followers_count });
+      if (typeof fb.fan_count === "number") m.push({ metric: "likes", value: fb.fan_count });
+      const fbPosts: SocialPostObservation[] = [];
+      try {
+        const res = await graphGet(
+          `${pageId}/published_posts`,
+          "id,message,created_time,permalink_url,full_picture",
+        );
+        const items = Array.isArray((res as { data?: unknown[] }).data)
+          ? (res as { data: Record<string, unknown>[] }).data.slice(0, 25)
+          : [];
+        const fbFollowers = typeof fb.followers_count === "number" ? fb.followers_count : null;
+        for (const post of items) {
+          const acts =
+            (await graphInsightObj(String(post.id), "post_activity_by_action_type")) ?? {};
+          const e = mapFbActions(acts, fbFollowers);
+          fbPosts.push({
+            externalPostId: String(post.id),
+            postedAt: (post.created_time as string) ?? null,
+            postType: "image",
+            caption: (post.message as string) ?? null,
+            permalink: (post.permalink_url as string) ?? null,
+            mediaUrl: (post.full_picture as string) ?? null,
+            mediaUrls: null,
+            likes: e.likes,
+            comments: e.comments,
+            shares: e.shares,
+            views: null,
+            engagement: e.engagement,
+            estimatedReach: e.estimatedReach,
+            reachSource: e.reachSource,
+          });
+        }
+      } catch (err) {
+        // published_posts/insights unavailable — page metrics still write.
+        console.warn("[meta-own] FB posts/insights failed (page metrics preserved):", err);
       }
-    } catch {
-      // published_posts/insights unavailable — page metrics still write.
+      if (m.length || fbPosts.length)
+        out.push({ platform: "facebook", metrics: m, posts: fbPosts });
+    } catch (err) {
+      console.error("[meta-own] FB page fetch failed — skipping FB:", err);
     }
-    if (m.length || fbPosts.length) out.push({ platform: "facebook", metrics: m, posts: fbPosts });
   }
 
   return out;

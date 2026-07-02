@@ -24,6 +24,18 @@ import {
 const num = (v?: number | null): string | null => (v == null ? null : String(v));
 const CHUNK = 500;
 
+/**
+ * Parse a date string and return a Date object, or null if the string is
+ * missing or produces an Invalid Date (e.g. locale-formatted strings such as
+ * "June 20, 2026" that node-postgres can't serialise). Using this guard
+ * prevents RangeError from toISOString() crashing the whole upsert batch (A6).
+ */
+export function toDateOrNull(x: string | null | undefined): Date | null {
+  if (!x) return null;
+  const ms = Date.parse(x);
+  return Number.isFinite(ms) ? new Date(ms) : null;
+}
+
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
@@ -297,7 +309,7 @@ export async function writeSocialPosts(
     socialAccountId,
     externalPostId: p.externalPostId,
     capturedDate: runDate,
-    postedAt: p.postedAt ? new Date(p.postedAt) : null,
+    postedAt: toDateOrNull(p.postedAt),
     postType: p.postType ?? null,
     caption: p.caption ?? null,
     permalink: p.permalink ?? null,
@@ -321,17 +333,44 @@ export async function writeSocialPosts(
           capturedDate: sql`excluded.captured_date`,
           postedAt: sql`excluded.posted_at`,
           postType: sql`excluded.post_type`,
+          // Content columns: always take the incoming value.
           caption: sql`excluded.caption`,
           permalink: sql`excluded.permalink`,
           mediaUrl: sql`excluded.media_url`,
           mediaUrls: sql`excluded.media_urls`,
-          likes: sql`excluded.likes`,
-          comments: sql`excluded.comments`,
-          shares: sql`excluded.shares`,
-          views: sql`excluded.views`,
-          engagement: sql`excluded.engagement`,
-          estimatedReach: sql`excluded.estimated_reach`,
-          reachSource: sql`excluded.reach_source`,
+          // Counters: COALESCE so an incoming NULL never wipes a real count.
+          likes: sql`COALESCE(excluded.likes, social_posts.likes)`,
+          comments: sql`COALESCE(excluded.comments, social_posts.comments)`,
+          shares: sql`COALESCE(excluded.shares, social_posts.shares)`,
+          views: sql`COALESCE(excluded.views, social_posts.views)`,
+          // Engagement: recompute from the coalesced counters so it never
+          // null-out a previously non-null value (likes+comments+shares,
+          // NULL only when all three coalesce to NULL).
+          engagement: sql`
+            CASE
+              WHEN COALESCE(excluded.likes, social_posts.likes) IS NULL
+               AND COALESCE(excluded.comments, social_posts.comments) IS NULL
+               AND COALESCE(excluded.shares, social_posts.shares) IS NULL
+              THEN NULL
+              ELSE COALESCE(COALESCE(excluded.likes, social_posts.likes), 0)
+                 + COALESCE(COALESCE(excluded.comments, social_posts.comments), 0)
+                 + COALESCE(COALESCE(excluded.shares, social_posts.shares), 0)
+            END`,
+          // Reach: keep measured over estimate — never downgrade.
+          estimatedReach: sql`
+            CASE
+              WHEN social_posts.reach_source = 'measured'
+               AND excluded.reach_source IS DISTINCT FROM 'measured'
+              THEN social_posts.estimated_reach
+              ELSE excluded.estimated_reach
+            END`,
+          reachSource: sql`
+            CASE
+              WHEN social_posts.reach_source = 'measured'
+               AND excluded.reach_source IS DISTINCT FROM 'measured'
+              THEN social_posts.reach_source
+              ELSE excluded.reach_source
+            END`,
         },
       });
   }
