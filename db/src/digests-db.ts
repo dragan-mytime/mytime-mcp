@@ -124,6 +124,7 @@ export async function listSchedules(db: Db): Promise<ScheduleWithPrompt[]> {
       name: digestSchedules.name,
       promptId: digestSchedules.promptId,
       sendAt: digestSchedules.sendAt,
+      period: digestSchedules.period,
       recipients: digestSchedules.recipients,
       enabled: digestSchedules.enabled,
       lastRunOn: digestSchedules.lastRunOn,
@@ -149,6 +150,7 @@ export async function upsertSchedule(
     name: string;
     promptId: string;
     sendAt: string;
+    period?: DigestPeriod;
     recipients: string[] | null;
     enabled: boolean;
   },
@@ -157,6 +159,7 @@ export async function upsertSchedule(
     name: input.name,
     promptId: input.promptId,
     sendAt: input.sendAt,
+    period: input.period ?? "daily",
     recipients: input.recipients,
     enabled: input.enabled,
     updatedAt: new Date(),
@@ -177,10 +180,19 @@ export async function deleteSchedule(db: Db, id: string): Promise<void> {
 
 // ── Scheduler support ──────────────────────────────────────────────────────
 
+/** Digest comparison mode: day-over-day or weekly rollup (E8). */
+export type DigestPeriod = "daily" | "weekly";
+
+/** Coerce a stored period value to a valid DigestPeriod (unknown → 'daily'). */
+export function parseDigestPeriod(v: unknown): DigestPeriod {
+  return v === "weekly" ? "weekly" : "daily";
+}
+
 export interface DueSchedule {
   id: string;
   name: string;
   body: string;
+  period: DigestPeriod;
   recipients: string[] | null;
 }
 
@@ -200,6 +212,7 @@ export async function dueSchedules(
       id: digestSchedules.id,
       name: digestSchedules.name,
       body: digestPrompts.body,
+      period: digestSchedules.period,
       recipients: digestSchedules.recipients,
     })
     .from(digestSchedules)
@@ -215,6 +228,7 @@ export async function dueSchedules(
     id: r.id,
     name: r.name,
     body: r.body,
+    period: parseDigestPeriod(r.period),
     recipients: (r.recipients as string[] | null) ?? null,
   }));
 }

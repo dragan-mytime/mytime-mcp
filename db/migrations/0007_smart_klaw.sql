@@ -1,0 +1,1 @@
+ALTER TABLE "digest_schedules" ADD COLUMN "period" text DEFAULT 'daily' NOT NULL;

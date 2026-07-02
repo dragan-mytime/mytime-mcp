@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import type { Db } from "./index.js";
 import { getAppSettings } from "./settings.js";
 
@@ -6,8 +6,27 @@ import { getAppSettings } from "./settings.js";
 // Public types
 // ---------------------------------------------------------------------------
 
+/** Freshness of one collector family's data for a target (from ingestion_runs). */
+export interface FreshnessInfo {
+  /** Timestamp of the last successful ingestion run, or null if none recorded. */
+  lastSuccessAt: string | null;
+  /** True when the last success is missing or older than 48h — zeros may be misleading. */
+  stale: boolean;
+}
+
 export interface CompetitorDigest {
   targetId: string;
+  /**
+   * Per-target data freshness (B2/E3): a competitor whose scrape failed shows
+   * stale=true here instead of silently reading as "went quiet". Families:
+   * products (web/feed collectors → sales+inventory), ads (meta-ads),
+   * social (apify-* + meta-own-brand).
+   */
+  dataFreshness: {
+    products: FreshnessInfo;
+    ads: FreshnessInfo;
+    social: FreshnessInfo;
+  };
   sales: {
     newlyDiscounted: number;
     ended: number;
@@ -49,6 +68,8 @@ export interface CompetitorDigest {
 
 export interface DigestResult {
   generatedFor: string;
+  /** Comparison window in days (1 = day-over-day, 7 = weekly). */
+  windowDays: number;
   note: string;
   competitors: CompetitorDigest[];
 }
@@ -64,6 +85,37 @@ const rows = <T>(r: unknown): T[] => {
   if (Array.isArray(obj.rows)) return obj.rows as T[];
   return [];
 };
+
+/**
+ * Shared per-target date-resolution CTE (B2/C2). Given a query producing
+ * DISTINCT (target_id, captured_date) rows for one source table, emits three
+ * CTEs usable as `WITH ${perTargetDatesCte(src, days)}, ...`:
+ *
+ *   dd     — every (target_id, captured_date), rn = 1 for the newest per target
+ *   latest — each target's own newest capture date ("today" for that target)
+ *   prior  — each target's newest capture date that is ≥ `days` days older than
+ *            its latest (day-over-day when days=1; weekly when days=7). A
+ *            target with no old-enough capture simply has no prior row —
+ *            delta metrics then read 0/empty instead of borrowing another
+ *            competitor's dates (the old global `LIMIT 2` bug made a failed
+ *            scrape indistinguishable from real inactivity).
+ */
+export function perTargetDatesCte(distinctDates: SQL, days: number): SQL {
+  return sql`
+    dd AS (
+      SELECT target_id, captured_date,
+             row_number() OVER (PARTITION BY target_id ORDER BY captured_date DESC) AS rn
+      FROM (${distinctDates}) x
+    ),
+    latest AS (SELECT target_id, captured_date AS d FROM dd WHERE rn = 1),
+    prior AS (
+      SELECT dd.target_id, max(dd.captured_date) AS d
+      FROM dd
+      JOIN latest l ON l.target_id = dd.target_id
+      WHERE dd.captured_date <= l.d - ${days}::int
+      GROUP BY dd.target_id
+    )`;
+}
 
 // ---------------------------------------------------------------------------
 // Signal-group queries
@@ -96,69 +148,62 @@ interface DiscountGroupRow {
   avg_pct: string | null;
 }
 
+/** DISTINCT (target_id, captured_date) over prices for non-self targets. */
+function pricesDates(competitorFilter: string | undefined): SQL {
+  const filterClause = competitorFilter ? sql`AND p.target_id = ${competitorFilter}` : sql``;
+  return sql`
+      SELECT DISTINCT p.target_id, pr.captured_date
+      FROM prices pr
+      JOIN products p ON p.id = pr.product_id
+      WHERE p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
+        ${filterClause}`;
+}
+
 async function querySales(
   db: Db,
   competitorFilter: string | undefined,
+  days: number,
 ): Promise<{
   agg: SalesAggRow[];
   samples: SalesSampleRow[];
   byBrand: DiscountGroupRow[];
   byCategory: DiscountGroupRow[];
 }> {
-  const filterClause = competitorFilter ? sql`AND p.target_id = ${competitorFilter}` : sql``;
+  const dates = () => perTargetDatesCte(pricesDates(competitorFilter), days);
 
   const aggResult = await db.execute(sql`
-    WITH dd AS (
-      SELECT DISTINCT pr.captured_date
-      FROM prices pr
-      JOIN products p ON p.id = pr.product_id
-      WHERE p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClause}
-      ORDER BY pr.captured_date DESC
-      LIMIT 2
-    ),
-    today_date AS (SELECT MAX(captured_date) AS d FROM dd),
-    prior_date AS (SELECT MIN(captured_date) AS d FROM dd),
+    WITH ${dates()},
     today_prices AS (
-      SELECT pr.product_id, pr.price::float8 AS price, pr.sale_price::float8 AS sale_price,
-             pr.discount_pct::float8 AS discount_pct, p.target_id
+      SELECT pr.product_id, pr.discount_pct::float8 AS discount_pct, p.target_id
       FROM prices pr
       JOIN products p ON p.id = pr.product_id
-      WHERE pr.captured_date = (SELECT d FROM today_date)
-        ${filterClause}
+      JOIN latest l ON l.target_id = p.target_id AND pr.captured_date = l.d
     ),
     prior_prices AS (
       SELECT pr.product_id, pr.discount_pct::float8 AS discount_pct
       FROM prices pr
       JOIN products p ON p.id = pr.product_id
-      WHERE pr.captured_date = (SELECT d FROM prior_date)
-        ${filterClause}
+      JOIN prior q ON q.target_id = p.target_id AND pr.captured_date = q.d
     )
     SELECT
       tp.target_id,
-      (SELECT d FROM today_date)  AS today_date,
-      (SELECT d FROM prior_date)  AS prior_date,
+      l.d::text AS today_date,
+      q.d::text AS prior_date,
       COUNT(*) FILTER (WHERE tp.discount_pct > 0)                                    AS on_sale_today,
       AVG(tp.discount_pct) FILTER (WHERE tp.discount_pct > 0)                        AS avg_pct,
-      COUNT(*) FILTER (WHERE tp.discount_pct > 0 AND (pp.discount_pct IS NULL OR pp.discount_pct = 0)) AS newly_discounted,
-      COUNT(*) FILTER (WHERE (tp.discount_pct IS NULL OR tp.discount_pct = 0) AND pp.discount_pct > 0) AS ended
+      COUNT(*) FILTER (WHERE q.d IS NOT NULL AND tp.discount_pct > 0
+                             AND (pp.discount_pct IS NULL OR pp.discount_pct = 0))   AS newly_discounted,
+      COUNT(*) FILTER (WHERE (tp.discount_pct IS NULL OR tp.discount_pct = 0)
+                             AND pp.discount_pct > 0)                                AS ended
     FROM today_prices tp
+    JOIN latest l ON l.target_id = tp.target_id
+    LEFT JOIN prior q ON q.target_id = tp.target_id
     LEFT JOIN prior_prices pp ON pp.product_id = tp.product_id
-    GROUP BY tp.target_id
+    GROUP BY tp.target_id, l.d, q.d
   `);
 
   const sampleResult = await db.execute(sql`
-    WITH dd AS (
-      SELECT DISTINCT pr.captured_date
-      FROM prices pr
-      JOIN products p ON p.id = pr.product_id
-      WHERE p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClause}
-      ORDER BY pr.captured_date DESC
-      LIMIT 2
-    ),
-    today_date AS (SELECT MAX(captured_date) AS d FROM dd),
-    prior_date AS (SELECT MIN(captured_date) AS d FROM dd),
+    WITH ${dates()},
     newly_disc AS (
       SELECT
         p.target_id,
@@ -169,13 +214,11 @@ async function querySales(
         ROW_NUMBER() OVER (PARTITION BY p.target_id ORDER BY tp.discount_pct DESC) AS rn
       FROM prices tp
       JOIN products p ON p.id = tp.product_id
-      LEFT JOIN prices pp ON pp.product_id = tp.product_id
-        AND pp.captured_date = (SELECT d FROM prior_date)
-      WHERE tp.captured_date = (SELECT d FROM today_date)
-        AND tp.discount_pct > 0
+      JOIN latest l ON l.target_id = p.target_id AND tp.captured_date = l.d
+      JOIN prior q ON q.target_id = p.target_id
+      LEFT JOIN prices pp ON pp.product_id = tp.product_id AND pp.captured_date = q.d
+      WHERE tp.discount_pct > 0
         AND (pp.discount_pct IS NULL OR pp.discount_pct = 0)
-        AND p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClause}
     )
     SELECT target_id, name, was, now, pct
     FROM newly_disc
@@ -185,16 +228,7 @@ async function querySales(
 
   // Today's on-sale products grouped by brand / category (top 5 each, by count then depth).
   const groupQuery = (col: "brand" | "category") => sql`
-    WITH dd AS (
-      SELECT DISTINCT pr.captured_date
-      FROM prices pr
-      JOIN products p ON p.id = pr.product_id
-      WHERE p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClause}
-      ORDER BY pr.captured_date DESC
-      LIMIT 1
-    ),
-    today_date AS (SELECT MAX(captured_date) AS d FROM dd),
+    WITH ${dates()},
     ranked AS (
       SELECT
         p.target_id,
@@ -207,11 +241,9 @@ async function querySales(
         ) AS rn
       FROM prices pr
       JOIN products p ON p.id = pr.product_id
-      WHERE pr.captured_date = (SELECT d FROM today_date)
-        AND pr.discount_pct > 0
+      JOIN latest l ON l.target_id = p.target_id AND pr.captured_date = l.d
+      WHERE pr.discount_pct > 0
         AND p.${sql.raw(col)} IS NOT NULL
-        AND p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClause}
       GROUP BY p.target_id, p.${sql.raw(col)}
     )
     SELECT target_id, label, cnt, avg_pct FROM ranked WHERE rn <= 5 ORDER BY target_id, cnt DESC
@@ -253,39 +285,30 @@ interface NewAdRow {
   media_type: string | null;
 }
 
+/** DISTINCT (target_id, captured_date) over ad_observations for non-self targets. */
+function adsDates(competitorFilter: string | undefined): SQL {
+  const filterClause = competitorFilter ? sql`AND target_id = ${competitorFilter}` : sql``;
+  return sql`
+      SELECT DISTINCT target_id, captured_date
+      FROM ad_observations
+      WHERE target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
+        ${filterClause}`;
+}
+
 async function queryAds(
   db: Db,
   competitorFilter: string | undefined,
+  days: number,
 ): Promise<{ agg: AdsAggRow[]; newAds: NewAdRow[] }> {
-  const filterClause = competitorFilter ? sql`AND a.target_id = ${competitorFilter}` : sql``;
-
-  const filterClauseBase = competitorFilter ? sql`AND target_id = ${competitorFilter}` : sql``;
+  const dates = () => perTargetDatesCte(adsDates(competitorFilter), days);
 
   const aggResult = await db.execute(sql`
-    WITH dd AS (
-      SELECT DISTINCT captured_date
-      FROM ad_observations
-      WHERE target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClauseBase}
-      ORDER BY captured_date DESC
-      LIMIT 2
-    ),
-    today_date AS (SELECT MAX(captured_date) AS d FROM dd),
-    prior_date AS (SELECT MIN(captured_date) AS d FROM dd),
+    WITH ${dates()},
     today_ads AS (
       SELECT a.target_id, a.ad_archive_id, a.days_running, a.ad_title,
              a.media_url, a.media_type, a.snapshot_url, a.link_url
       FROM ad_observations a
-      WHERE a.captured_date = (SELECT d FROM today_date)
-        AND a.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClause}
-    ),
-    prior_ads AS (
-      SELECT a.ad_archive_id
-      FROM ad_observations a
-      WHERE a.captured_date = (SELECT d FROM prior_date)
-        AND a.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClause}
+      JOIN latest l ON l.target_id = a.target_id AND a.captured_date = l.d
     ),
     longest AS (
       SELECT DISTINCT ON (target_id)
@@ -295,62 +318,37 @@ async function queryAds(
     )
     SELECT
       ta.target_id,
-      COUNT(*)                                                                   AS active_today,
-      COUNT(*) FILTER (WHERE pa.ad_archive_id IS NULL AND (SELECT d FROM prior_date) IS NOT NULL
-                             AND (SELECT d FROM today_date) <> (SELECT d FROM prior_date))
-        AS stopped_count_placeholder,
-      l.days_running                                                             AS longest_days,
-      l.ad_title                                                                 AS longest_title,
-      l.media_url                                                                AS longest_media,
-      l.media_type                                                               AS longest_media_type,
-      l.snapshot_url                                                             AS longest_snapshot,
-      l.link_url                                                                 AS longest_link,
-      SUM(CASE WHEN pa.ad_archive_id IS NOT NULL THEN 1 ELSE 0 END)            AS prior_count
+      COUNT(*)           AS active_today,
+      lo.days_running    AS longest_days,
+      lo.ad_title        AS longest_title,
+      lo.media_url       AS longest_media,
+      lo.media_type      AS longest_media_type,
+      lo.snapshot_url    AS longest_snapshot,
+      lo.link_url        AS longest_link
     FROM today_ads ta
-    LEFT JOIN prior_ads pa ON pa.ad_archive_id = ta.ad_archive_id
-    LEFT JOIN longest l ON l.target_id = ta.target_id
-    GROUP BY ta.target_id, l.days_running, l.ad_title, l.media_url, l.media_type,
-             l.snapshot_url, l.link_url
+    LEFT JOIN longest lo ON lo.target_id = ta.target_id
+    GROUP BY ta.target_id, lo.days_running, lo.ad_title, lo.media_url, lo.media_type,
+             lo.snapshot_url, lo.link_url
   `);
 
-  // Stopped count: ads in prior not in today
+  // Stopped count: ads present on the target's prior date but gone on its latest.
   const stoppedResult = await db.execute(sql`
-    WITH dd AS (
-      SELECT DISTINCT captured_date
-      FROM ad_observations
-      WHERE target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClauseBase}
-      ORDER BY captured_date DESC
-      LIMIT 2
-    ),
-    today_date AS (SELECT MAX(captured_date) AS d FROM dd),
-    prior_date AS (SELECT MIN(captured_date) AS d FROM dd)
+    WITH ${dates()}
     SELECT a.target_id, COUNT(*) AS stopped_count
     FROM ad_observations a
-    WHERE a.captured_date = (SELECT d FROM prior_date)
-      AND (SELECT d FROM prior_date) IS NOT NULL
-      AND (SELECT d FROM today_date) <> (SELECT d FROM prior_date)
-      AND a.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-      ${filterClause}
-      AND a.ad_archive_id NOT IN (
-        SELECT ad_archive_id FROM ad_observations
-        WHERE captured_date = (SELECT d FROM today_date)
-          AND target_id = a.target_id
-      )
+    JOIN prior q ON q.target_id = a.target_id AND a.captured_date = q.d
+    JOIN latest l ON l.target_id = a.target_id
+    WHERE NOT EXISTS (
+      SELECT 1 FROM ad_observations cur
+      WHERE cur.target_id = a.target_id
+        AND cur.ad_archive_id = a.ad_archive_id
+        AND cur.captured_date = l.d
+    )
     GROUP BY a.target_id
   `);
 
   const newAdsResult = await db.execute(sql`
-    WITH dd AS (
-      SELECT DISTINCT captured_date
-      FROM ad_observations
-      WHERE target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClauseBase}
-      ORDER BY captured_date DESC
-      LIMIT 2
-    ),
-    today_date AS (SELECT MAX(captured_date) AS d FROM dd),
-    prior_date AS (SELECT MIN(captured_date) AS d FROM dd),
+    WITH ${dates()},
     new_ads AS (
       SELECT
         a.target_id,
@@ -362,15 +360,14 @@ async function queryAds(
         a.media_type,
         ROW_NUMBER() OVER (PARTITION BY a.target_id ORDER BY a.days_running ASC NULLS LAST) AS rn
       FROM ad_observations a
-      WHERE a.captured_date = (SELECT d FROM today_date)
-        AND a.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClause}
-        AND NOT EXISTS (
-          SELECT 1 FROM ad_observations prev
-          WHERE prev.ad_archive_id = a.ad_archive_id
-            AND prev.target_id = a.target_id
-            AND prev.captured_date = (SELECT d FROM prior_date)
-        )
+      JOIN latest l ON l.target_id = a.target_id AND a.captured_date = l.d
+      JOIN prior q ON q.target_id = a.target_id
+      WHERE NOT EXISTS (
+        SELECT 1 FROM ad_observations prev
+        WHERE prev.ad_archive_id = a.ad_archive_id
+          AND prev.target_id = a.target_id
+          AND prev.captured_date = q.d
+      )
     )
     SELECT target_id, ad_title, link_url, days_running, snapshot_url, media_url, media_type
     FROM new_ads
@@ -384,16 +381,9 @@ async function queryAds(
     stoppedMap.set(r.target_id, parseInt(r.stopped_count, 10) || 0);
   }
 
-  const aggRows = rows<AdsAggRow & { stopped_count_placeholder?: unknown }>(aggResult).map((r) => ({
-    target_id: r.target_id,
-    active_today: r.active_today,
+  const aggRows = rows<Omit<AdsAggRow, "stopped_count">>(aggResult).map((r) => ({
+    ...r,
     stopped_count: String(stoppedMap.get(r.target_id) ?? 0),
-    longest_days: r.longest_days,
-    longest_title: r.longest_title,
-    longest_media: r.longest_media,
-    longest_media_type: r.longest_media_type,
-    longest_snapshot: r.longest_snapshot,
-    longest_link: r.longest_link,
   }));
 
   return {
@@ -411,39 +401,38 @@ interface SocialRow {
   prior_val: string | null;
 }
 
-async function querySocial(db: Db, competitorFilter: string | undefined): Promise<SocialRow[]> {
+/** DISTINCT (target_id, captured_date) over follower metrics for non-self targets. */
+function socialDates(competitorFilter: string | undefined): SQL {
   const filterClause = competitorFilter ? sql`AND sa.target_id = ${competitorFilter}` : sql``;
-
-  const result = await db.execute(sql`
-    WITH dd AS (
-      SELECT DISTINCT sm.captured_date
+  return sql`
+      SELECT DISTINCT sa.target_id, sm.captured_date
       FROM social_metrics sm
       JOIN social_accounts sa ON sa.id = sm.social_account_id
       WHERE sm.metric = 'followers'
         AND sa.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClause}
-      ORDER BY sm.captured_date DESC
-      LIMIT 2
-    ),
-    today_date AS (SELECT MAX(captured_date) AS d FROM dd),
-    prior_date AS (SELECT MIN(captured_date) AS d FROM dd),
+        ${filterClause}`;
+}
+
+async function querySocial(
+  db: Db,
+  competitorFilter: string | undefined,
+  days: number,
+): Promise<SocialRow[]> {
+  const result = await db.execute(sql`
+    WITH ${perTargetDatesCte(socialDates(competitorFilter), days)},
     today_m AS (
       SELECT sa.target_id, sa.platform::text, sm.value::float8 AS val
       FROM social_metrics sm
       JOIN social_accounts sa ON sa.id = sm.social_account_id
-      WHERE sm.captured_date = (SELECT d FROM today_date)
-        AND sm.metric = 'followers'
-        AND sa.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClause}
+      JOIN latest l ON l.target_id = sa.target_id AND sm.captured_date = l.d
+      WHERE sm.metric = 'followers'
     ),
     prior_m AS (
       SELECT sa.target_id, sa.platform::text, sm.value::float8 AS val
       FROM social_metrics sm
       JOIN social_accounts sa ON sa.id = sm.social_account_id
-      WHERE sm.captured_date = (SELECT d FROM prior_date)
-        AND sm.metric = 'followers'
-        AND sa.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClause}
+      JOIN prior q ON q.target_id = sa.target_id AND sm.captured_date = q.d
+      WHERE sm.metric = 'followers'
     )
     SELECT
       tm.target_id,
@@ -451,8 +440,7 @@ async function querySocial(db: Db, competitorFilter: string | undefined): Promis
       tm.val  AS today_val,
       pm.val  AS prior_val
     FROM today_m tm
-    LEFT JOIN prior_m pm ON pm.target_id = tm.target_id AND pm.platform = tm.platform
-    WHERE pm.val IS NOT NULL  -- only include platforms where both dates exist
+    JOIN prior_m pm ON pm.target_id = tm.target_id AND pm.platform = tm.platform
     ORDER BY tm.target_id, tm.platform
   `);
 
@@ -478,54 +466,51 @@ interface PriceMoveRow {
   to_price: string;
 }
 
+/** DISTINCT (target_id, captured_date) over inventory snapshots for non-self targets. */
+function inventoryDates(competitorFilter: string | undefined): SQL {
+  const filterClause = competitorFilter ? sql`AND p.target_id = ${competitorFilter}` : sql``;
+  return sql`
+      SELECT DISTINCT p.target_id, inv.captured_date
+      FROM inventory_snapshots inv
+      JOIN products p ON p.id = inv.product_id
+      WHERE p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
+        ${filterClause}`;
+}
+
 async function queryInventory(
   db: Db,
   competitorFilter: string | undefined,
+  days: number,
   moveThresholdPct: number,
 ): Promise<{
   agg: InvAggRow[];
   stockouts: StockoutRow[];
   priceMoves: PriceMoveRow[];
 }> {
-  const filterClause = competitorFilter ? sql`AND p.target_id = ${competitorFilter}` : sql``;
+  const invDates = () => perTargetDatesCte(inventoryDates(competitorFilter), days);
 
-  // New products: earliest inventory date equals today's date (first seen today)
+  // New products: first snapshot inside the window (after the target's prior
+  // date; equal to its latest date when the target has no prior).
   const aggResult = await db.execute(sql`
-    WITH dd AS (
-      SELECT DISTINCT inv.captured_date
+    WITH ${invDates()},
+    firsts AS (
+      SELECT inv.product_id, MIN(inv.captured_date) AS first_date
       FROM inventory_snapshots inv
-      JOIN products p ON p.id = inv.product_id
-      WHERE p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClause}
-      ORDER BY inv.captured_date DESC
-      LIMIT 2
-    ),
-    today_date AS (SELECT MAX(captured_date) AS d FROM dd)
+      GROUP BY inv.product_id
+    )
     SELECT p.target_id, COUNT(*) AS new_products
     FROM products p
-    WHERE p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-      ${filterClause}
-      AND (
-        SELECT MIN(inv.captured_date)
-        FROM inventory_snapshots inv
-        WHERE inv.product_id = p.id
-      ) = (SELECT d FROM today_date)
+    JOIN firsts f ON f.product_id = p.id
+    JOIN latest l ON l.target_id = p.target_id
+    LEFT JOIN prior q ON q.target_id = p.target_id
+    WHERE f.first_date <= l.d
+      AND f.first_date > COALESCE(q.d, l.d - 1)
     GROUP BY p.target_id
   `);
 
-  // New stockouts: in_stock on prior date, out_of_stock on today
+  // New stockouts: in_stock on the target's prior date, out_of_stock on its latest.
   const stockoutsResult = await db.execute(sql`
-    WITH dd AS (
-      SELECT DISTINCT inv.captured_date
-      FROM inventory_snapshots inv
-      JOIN products p ON p.id = inv.product_id
-      WHERE p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClause}
-      ORDER BY inv.captured_date DESC
-      LIMIT 2
-    ),
-    today_date AS (SELECT MAX(captured_date) AS d FROM dd),
-    prior_date AS (SELECT MIN(captured_date) AS d FROM dd),
+    WITH ${invDates()},
     stockouts AS (
       SELECT
         p.target_id,
@@ -533,16 +518,13 @@ async function queryInventory(
         ROW_NUMBER() OVER (PARTITION BY p.target_id ORDER BY p.name) AS rn
       FROM inventory_snapshots today_inv
       JOIN products p ON p.id = today_inv.product_id
+      JOIN latest l ON l.target_id = p.target_id AND today_inv.captured_date = l.d
+      JOIN prior q ON q.target_id = p.target_id
       JOIN inventory_snapshots prior_inv
         ON prior_inv.product_id = today_inv.product_id
-       AND prior_inv.captured_date = (SELECT d FROM prior_date)
-      WHERE today_inv.captured_date = (SELECT d FROM today_date)
-        AND today_inv.stock_status = 'out_of_stock'
+       AND prior_inv.captured_date = q.d
+      WHERE today_inv.stock_status = 'out_of_stock'
         AND prior_inv.stock_status = 'in_stock'
-        AND (SELECT d FROM prior_date) IS NOT NULL
-        AND (SELECT d FROM today_date) <> (SELECT d FROM prior_date)
-        AND p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClause}
     )
     SELECT target_id, name
     FROM stockouts
@@ -551,20 +533,10 @@ async function queryInventory(
   `);
 
   // Price moves: price changed by more than the admin-set threshold
-  // (discount_threshold_pct, default 5%) between the two most recent prices dates
+  // (discount_threshold_pct, default 5%) between the target's own two dates.
   const moveThresholdFrac = moveThresholdPct / 100;
   const priceMovesResult = await db.execute(sql`
-    WITH dd AS (
-      SELECT DISTINCT pr.captured_date
-      FROM prices pr
-      JOIN products p ON p.id = pr.product_id
-      WHERE p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClause}
-      ORDER BY pr.captured_date DESC
-      LIMIT 2
-    ),
-    today_date AS (SELECT MAX(captured_date) AS d FROM dd),
-    prior_date AS (SELECT MIN(captured_date) AS d FROM dd),
+    WITH ${perTargetDatesCte(pricesDates(competitorFilter), days)},
     moves AS (
       SELECT
         p.target_id,
@@ -577,16 +549,13 @@ async function queryInventory(
         ) AS rn
       FROM prices pr_today
       JOIN products p ON p.id = pr_today.product_id
+      JOIN latest l ON l.target_id = p.target_id AND pr_today.captured_date = l.d
+      JOIN prior q ON q.target_id = p.target_id
       JOIN prices pr_prior
         ON pr_prior.product_id = pr_today.product_id
-       AND pr_prior.captured_date = (SELECT d FROM prior_date)
-      WHERE pr_today.captured_date = (SELECT d FROM today_date)
-        AND (SELECT d FROM prior_date) IS NOT NULL
-        AND (SELECT d FROM today_date) <> (SELECT d FROM prior_date)
-        AND pr_prior.price::float8 > 0
+       AND pr_prior.captured_date = q.d
+      WHERE pr_prior.price::float8 > 0
         AND ABS(pr_today.price::float8 - pr_prior.price::float8) / pr_prior.price::float8 > ${moveThresholdFrac}
-        AND p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
-        ${filterClause}
     )
     SELECT target_id, name, from_price, to_price
     FROM moves
@@ -599,6 +568,53 @@ async function queryInventory(
     stockouts: rows<StockoutRow>(stockoutsResult),
     priceMoves: rows<PriceMoveRow>(priceMovesResult),
   };
+}
+
+// ── 5. FRESHNESS (E3) ───────────────────────────────────────────────────────
+
+interface FreshnessRow {
+  target_id: string;
+  family: string; // 'products' | 'ads' | 'social'
+  last_success_at: string | null;
+  stale: boolean;
+}
+
+/**
+ * Last successful ingestion run per (active, non-self) target per collector
+ * family, flagged stale when missing or older than 48h. Social + meta-ads
+ * collectors record run-level rows (target_id IS NULL) — those apply to every
+ * target, since one Apify run covers all accounts/pages.
+ */
+async function queryFreshness(
+  db: Db,
+  competitorFilter: string | undefined,
+): Promise<FreshnessRow[]> {
+  const filterClause = competitorFilter ? sql`AND t.id = ${competitorFilter}` : sql``;
+  const result = await db.execute(sql`
+    WITH runs AS (
+      SELECT r.target_id, r.status,
+             COALESCE(r.finished_at, r.started_at) AS at,
+             CASE
+               WHEN r.collector = 'meta-ads' THEN 'ads'
+               WHEN r.collector LIKE 'apify-%' OR r.collector = 'meta-own-brand' THEN 'social'
+               WHEN r.collector LIKE 'digest:%' THEN NULL
+               ELSE 'products'
+             END AS family
+      FROM ingestion_runs r
+    )
+    SELECT
+      t.id AS target_id,
+      r.family,
+      MAX(r.at) FILTER (WHERE r.status = 'success')::text AS last_success_at,
+      (MAX(r.at) FILTER (WHERE r.status = 'success') IS NULL
+        OR MAX(r.at) FILTER (WHERE r.status = 'success') < now() - interval '48 hours') AS stale
+    FROM targets t
+    JOIN runs r ON (r.target_id = t.id OR r.target_id IS NULL)
+    WHERE t.is_self = false AND t.active AND r.family IS NOT NULL
+      ${filterClause}
+    GROUP BY t.id, r.family
+  `);
+  return rows<FreshnessRow>(result);
 }
 
 // ---------------------------------------------------------------------------
@@ -620,25 +636,38 @@ async function fetchLatestPricesDate(db: Db): Promise<string> {
 // Main export
 // ---------------------------------------------------------------------------
 
+const STALE_FALLBACK: FreshnessInfo = { lastSuccessAt: null, stale: true };
+
+/**
+ * Competitor digest over each target's own capture dates (B2): "today" is the
+ * target's latest snapshot, "prior" its latest snapshot ≥ `days` days older
+ * (default 1 = day-over-day; 7 = weekly rollup, E8). Targets with stale
+ * ingestion (no successful run in 48h) are flagged in `dataFreshness` (E3).
+ */
 export async function dailyDigest(
   db: Db,
   opts: { competitor?: string; days?: number } = {},
 ): Promise<DigestResult> {
   const filter = opts.competitor;
+  const days = Math.max(1, Math.floor(opts.days ?? 1));
 
   // Admin knobs (discount_threshold_pct drives the price-move cutoff below).
   const settings = await getAppSettings(db);
 
   // Run all signal groups in parallel
-  const [latestDate, salesData, adsData, socialData, inventoryData] = await Promise.all([
-    fetchLatestPricesDate(db),
-    querySales(db, filter),
-    queryAds(db, filter),
-    querySocial(db, filter),
-    queryInventory(db, filter, settings.discountThresholdPct),
-  ]);
+  const [latestDate, salesData, adsData, socialData, inventoryData, freshnessData] =
+    await Promise.all([
+      fetchLatestPricesDate(db),
+      querySales(db, filter, days),
+      queryAds(db, filter, days),
+      querySocial(db, filter, days),
+      queryInventory(db, filter, days, settings.discountThresholdPct),
+      queryFreshness(db, filter),
+    ]);
 
-  // Collect all target IDs that appear in any signal group
+  // Collect all target IDs that appear in any signal group. Freshness rows
+  // count too: a competitor whose scrapes all fail must still show up (stale),
+  // not silently vanish from the digest.
   const allTargetIds = new Set<string>();
   for (const r of salesData.agg) allTargetIds.add(r.target_id);
   for (const r of adsData.agg) allTargetIds.add(r.target_id);
@@ -646,6 +675,7 @@ export async function dailyDigest(
   for (const r of inventoryData.agg) allTargetIds.add(r.target_id);
   for (const r of inventoryData.stockouts) allTargetIds.add(r.target_id);
   for (const r of inventoryData.priceMoves) allTargetIds.add(r.target_id);
+  for (const r of freshnessData) allTargetIds.add(r.target_id);
 
   // Exclude own brand (is_self) — this is a competitor digest. Belt-and-suspenders
   // in case any signal source slipped a self target in.
@@ -705,6 +735,13 @@ export async function dailyDigest(
     pricesMovesByTarget.set(p.target_id, arr);
   }
 
+  const freshnessByTarget = new Map<string, Map<string, FreshnessInfo>>();
+  for (const f of freshnessData) {
+    const m = freshnessByTarget.get(f.target_id) ?? new Map<string, FreshnessInfo>();
+    m.set(f.family, { lastSuccessAt: f.last_success_at, stale: f.stale });
+    freshnessByTarget.set(f.target_id, m);
+  }
+
   // Assemble CompetitorDigest per target
   const competitors: CompetitorDigest[] = [];
   for (const targetId of allTargetIds) {
@@ -712,6 +749,7 @@ export async function dailyDigest(
     const aa = adsByTarget.get(targetId);
     const socialRows = socialByTarget.get(targetId) ?? [];
     const ia = invAggByTarget.get(targetId);
+    const fresh = freshnessByTarget.get(targetId);
 
     const salesSamples = (salesSamplesByTarget.get(targetId) ?? []).map((s) => ({
       name: s.name,
@@ -751,6 +789,11 @@ export async function dailyDigest(
 
     const digest: CompetitorDigest = {
       targetId,
+      dataFreshness: {
+        products: fresh?.get("products") ?? STALE_FALLBACK,
+        ads: fresh?.get("ads") ?? STALE_FALLBACK,
+        social: fresh?.get("social") ?? STALE_FALLBACK,
+      },
       sales: {
         onSaleToday: sa?.on_sale_today != null ? parseInt(sa.on_sale_today, 10) : 0,
         avgPct: sa?.avg_pct != null ? parseFloat(sa.avg_pct) : null,
@@ -796,7 +839,11 @@ export async function dailyDigest(
 
   return {
     generatedFor: latestDate,
-    note: "Day-over-day competitor changes. Discount/velocity figures are estimates.",
+    windowDays: days,
+    note:
+      days === 1
+        ? "Day-over-day competitor changes, each competitor compared on its OWN latest vs prior capture dates. Targets with dataFreshness.stale=true have no successful scrape in 48h — treat their zeros as 'no fresh data', not inactivity. Discount/velocity figures are estimates."
+        : `Competitor changes over a ~${days}-day window: each competitor's latest capture vs its latest capture at least ${days} days earlier. Targets with dataFreshness.stale=true have no successful scrape in 48h — treat their zeros as 'no fresh data', not inactivity. Discount/velocity figures are estimates.`,
     competitors,
   };
 }

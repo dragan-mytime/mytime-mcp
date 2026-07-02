@@ -346,6 +346,8 @@ export const digestSchedules = pgTable("digest_schedules", {
     .notNull()
     .references(() => digestPrompts.id, { onDelete: "restrict" }),
   sendAt: text("send_at").notNull(), // "HH:MM", interpreted in Europe/Skopje
+  // 'daily' (day-over-day) | 'weekly' (each target's latest vs ≥7 days earlier, E8)
+  period: text("period").notNull().default("daily"),
   recipients: jsonb("recipients"), // string[] | null → falls back to digest_recipients
   enabled: boolean("enabled").notNull().default(true),
   lastRunOn: date("last_run_on"), // local date the schedule last fired (idempotency)

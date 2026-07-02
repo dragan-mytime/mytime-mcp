@@ -8,6 +8,7 @@ interface Sched {
   id: string;
   name: string;
   body: string;
+  period: "daily" | "weekly";
   recipients: string[] | null;
   sendAt: string;
   enabled: boolean;
@@ -32,7 +33,7 @@ const getAppSettings = vi.fn(async () => ({
 const dueSchedules = vi.fn(async (_db: unknown, today: string, hhmm: string) =>
   schedules
     .filter((s) => s.enabled && s.sendAt <= hhmm && (s.lastRunOn == null || s.lastRunOn < today))
-    .map(({ id, name, body, recipients }) => ({ id, name, body, recipients })),
+    .map(({ id, name, body, period, recipients }) => ({ id, name, body, period, recipients })),
 );
 // Atomic claim, like the real UPDATE … WHERE not-run-today RETURNING.
 const markScheduleRan = vi.fn(async (_db: unknown, id: string, today: string) => {
@@ -73,6 +74,7 @@ beforeEach(() => {
       id: "daily-0700",
       name: "Daily 07:00",
       body: "prompt",
+      period: "daily",
       recipients: null,
       sendAt: "07:00",
       enabled: true,
@@ -165,5 +167,27 @@ describe("tick", () => {
     digestEnabled = true;
     await tick(db, at("05:01"));
     expect(sendDigestEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("daily schedule calls dailyDigest with days=1 (E8)", async () => {
+    await tick(db, at("05:00"));
+    expect(dailyDigest).toHaveBeenCalledWith(db, { days: 1 });
+  });
+
+  it("weekly schedule calls dailyDigest with days=7 (E8)", async () => {
+    schedules = [
+      {
+        id: "weekly-0700",
+        name: "Weekly 07:00",
+        body: "prompt",
+        period: "weekly",
+        recipients: null,
+        sendAt: "07:00",
+        enabled: true,
+        lastRunOn: null,
+      },
+    ];
+    await tick(db, at("05:00"));
+    expect(dailyDigest).toHaveBeenCalledWith(db, { days: 7 });
   });
 });

@@ -1,5 +1,5 @@
 import { optionalEnv } from "@mytime/shared";
-import type { CompetitorDigest, DigestResult } from "./digest.js";
+import type { CompetitorDigest, DigestResult, FreshnessInfo } from "./digest.js";
 
 const MODEL = "gemini-2.5-flash";
 
@@ -31,6 +31,14 @@ function competitorBlock(c: CompetitorDigest, lang: "en" | "mk"): string {
   const priceMovesLabel = isEn ? "Price moves (>5%)" : "Промени на цени (>5%)";
   const noDataLabel = isEn ? "none" : "нема";
 
+  // E3: a stale collector family means zeros are "no fresh data", not inactivity.
+  const staleLine = (f: FreshnessInfo) => {
+    const since = f.lastSuccessAt ? f.lastSuccessAt.slice(0, 10) : isEn ? "unknown" : "непознато";
+    const label = isEn ? `⚠ no fresh data since ${since}` : `⚠ нема свежи податоци од ${since}`;
+    return `<ul><li>${esc(label)}</li></ul>`;
+  };
+  const freshness = c.dataFreshness;
+
   const { sales, ads, social, inventory } = c;
   const avgPctStr = sales.avgPct != null ? `${sales.avgPct.toFixed(1)}%` : noDataLabel;
   const longestRunningStr =
@@ -58,37 +66,58 @@ function competitorBlock(c: CompetitorDigest, lang: "en" | "mk"): string {
           .join("")
       : `<li>${noDataLabel}</li>`;
 
-  return `
-<h3>${esc(c.targetId)}</h3>
-<h4>${salesLabel}</h4>
-<ul>
+  const salesBlock = freshness.products.stale
+    ? staleLine(freshness.products)
+    : `<ul>
   <li>${onSaleLabel}: ${sales.onSaleToday}</li>
   <li>${avgPctLabel}: ${avgPctStr}</li>
   <li>${newlyDiscLabel}: ${sales.newlyDiscounted}</li>
   <li>${endedLabel}: ${sales.ended}</li>
-</ul>
-<h4>${adsLabel}</h4>
-<ul>
+</ul>`;
+  const adsBlock = freshness.ads.stale
+    ? staleLine(freshness.ads)
+    : `<ul>
   <li>${activeTodayLabel}: ${ads.activeToday}</li>
   <li>${newAdsLabel}: <ul>${newAdLines}</ul></li>
   <li>${longestLabel}: ${longestRunningStr}</li>
-</ul>
-<h4>${socialLabel}</h4>
-<ul>
+</ul>`;
+  const socialBlock = freshness.social.stale
+    ? staleLine(freshness.social)
+    : `<ul>
   <li>${followerDeltaLabel}: <ul>${followerLines || `<li>${noDataLabel}</li>`}</ul></li>
-</ul>
-<h4>${inventoryLabel}</h4>
-<ul>
+</ul>`;
+  const inventoryBlock = freshness.products.stale
+    ? staleLine(freshness.products)
+    : `<ul>
   <li>${newProductsLabel}: ${inventory.newProducts}</li>
   <li>${stockoutsLabel}: <ul>${stockoutLines}</ul></li>
   <li>${priceMovesLabel}: <ul>${priceMoveLines}</ul></li>
 </ul>`;
+
+  return `
+<h3>${esc(c.targetId)}</h3>
+<h4>${salesLabel}</h4>
+${salesBlock}
+<h4>${adsLabel}</h4>
+${adsBlock}
+<h4>${socialLabel}</h4>
+${socialBlock}
+<h4>${inventoryLabel}</h4>
+${inventoryBlock}`;
 }
 
 /** Deterministic bilingual fallback (EN then MK) used when Gemini is unavailable. */
 export function templateDigest(digest: DigestResult): string {
+  const weekly = digest.windowDays > 1;
   const block = (lang: "en" | "mk") => {
-    const heading = lang === "en" ? "Daily competitor digest" : "Дневен преглед на конкуренти";
+    const heading =
+      lang === "en"
+        ? weekly
+          ? `Weekly competitor digest (${digest.windowDays}-day window)`
+          : "Daily competitor digest"
+        : weekly
+          ? `Неделен преглед на конкуренти (${digest.windowDays} дена)`
+          : "Дневен преглед на конкуренти";
     const dateLabel = lang === "en" ? "Date" : "Датум";
     const blocks = digest.competitors.map((c) => competitorBlock(c, lang)).join("\n<hr/>\n");
     return `<h2>${heading}</h2>
@@ -174,7 +203,10 @@ export async function renderDigestWithPrompt(
   promptBody: string,
   apiKey?: string,
 ): Promise<{ subject: string; html: string; usedFallback: boolean }> {
-  const subject = `MY:TIME — Дневен преглед / Daily digest (${digest.generatedFor})`;
+  const subject =
+    digest.windowDays > 1
+      ? `MY:TIME — Неделен преглед / Weekly digest (${digest.generatedFor})`
+      : `MY:TIME — Дневен преглед / Daily digest (${digest.generatedFor})`;
   const narrated = await geminiNarrate(digest, promptBody, apiKey);
   const usedFallback = narrated == null;
   const inner = narrated ?? templateDigest(digest);

@@ -4,6 +4,7 @@ import {
   compareMarketShare,
   compareSkus,
   competitorAds,
+  dataHealth,
   inventoryVelocity,
   priceAssortment,
   socialBenchmark,
@@ -170,14 +171,34 @@ export const tools: McpToolDef[] = [
     name: "daily_digest",
     title: "Daily competitor digest (day-over-day changes)",
     description:
-      "What competitors did since the last snapshot: new/ended sales campaigns, new/stopped ads + long-runners, follower moves, new products/stockouts/price moves. Returns structured data — narrate it as a briefing (the user may ask in English or Macedonian). Figures are estimates.",
+      "What competitors did since the last snapshot: new/ended sales campaigns, new/stopped ads + long-runners, follower moves, new products/stockouts/price moves. Each competitor is compared on its OWN latest vs prior capture dates and carries a dataFreshness stamp (stale = no successful scrape in 48h). Returns structured data — narrate it as a briefing (the user may ask in English or Macedonian). Figures are estimates.",
     requiredRole: "analyst",
     inputSchema: {
       competitor: z
         .string()
         .optional()
         .describe("target id, e.g. 'b-watch'; omit for all competitors"),
+      days: z
+        .number()
+        .int()
+        .positive()
+        .max(31)
+        .optional()
+        .describe(
+          "comparison window: prior = each target's latest capture ≥ this many days older than its latest (default 1 = day-over-day; 7 = weekly)",
+        ),
     },
-    run: (_pool, a) => dailyDigest(readDb(), a as { competitor?: string }),
+    run: (_pool, a) => dailyDigest(readDb(), a as { competitor?: string; days?: number }),
+  },
+  {
+    name: "data_health",
+    title: "Ingestion data health (per target × collector)",
+    description:
+      "Freshness of the scraped data: per target and collector, the last successful run (time + rows written), last failure (time + error), and consecutive failures since the last success. Social + ad collectors run once for all targets and appear as '(all targets)'. Use this before trusting zeros in other tools.",
+    requiredRole: "analyst",
+    inputSchema: {
+      competitor: z.string().optional().describe("target id, e.g. 'b-watch'; omit for all targets"),
+    },
+    run: (pool, a) => dataHealth(pool, a as { competitor?: string }),
   },
 ];

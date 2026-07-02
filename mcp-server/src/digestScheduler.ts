@@ -65,7 +65,8 @@ export async function tick(db: Db, now: Date = new Date()): Promise<void> {
       continue;
     }
     try {
-      const digest = await dailyDigest(db);
+      // Weekly schedules compare each target's latest capture vs ≥7 days earlier (E8).
+      const digest = await dailyDigest(db, { days: s.period === "weekly" ? 7 : 1 });
       const apiKey = await resolveGeminiKey(db);
       const mail = await renderDigestWithPrompt(digest, s.body, apiKey);
       const to = await resolveRecipients(db, s);

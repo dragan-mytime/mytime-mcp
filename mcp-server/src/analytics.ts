@@ -471,6 +471,72 @@ export async function socialPosts(
   };
 }
 
+/**
+ * data_health — ingestion freshness per target × collector (E3). Social and
+ * meta-ads collectors record run-level rows (target_id IS NULL — one Apify run
+ * covers every account/page); those are reported under '(all targets)'.
+ */
+export async function dataHealth(pool: Pool, opts: { competitor?: string } = {}) {
+  const params: unknown[] = [];
+  let filter = "";
+  if (opts.competitor) {
+    params.push(opts.competitor);
+    // Run-level rows (NULL target) still apply to the requested competitor.
+    filter = `AND (r.target_id = $${params.length} OR r.target_id IS NULL)`;
+  }
+  const { rows } = await pool.query(
+    `WITH runs AS (
+       SELECT COALESCE(r.target_id, '(all targets)') AS target_id,
+              r.collector, r.status, r.error, r.rows_written,
+              COALESCE(r.finished_at, r.started_at) AS at,
+              row_number() OVER (
+                PARTITION BY COALESCE(r.target_id, '(all targets)'), r.collector
+                ORDER BY r.started_at DESC
+              ) AS rn
+       FROM ingestion_runs r
+       WHERE r.collector NOT LIKE 'digest:%' ${filter}
+     ),
+     last_success AS (
+       SELECT DISTINCT ON (target_id, collector) target_id, collector, at, rows_written
+       FROM runs WHERE status = 'success' ORDER BY target_id, collector, at DESC
+     ),
+     last_failure AS (
+       SELECT DISTINCT ON (target_id, collector) target_id, collector, at, error
+       FROM runs WHERE status = 'failed' ORDER BY target_id, collector, at DESC
+     ),
+     first_success_rn AS (
+       SELECT target_id, collector, min(rn) AS rn
+       FROM runs WHERE status = 'success' GROUP BY target_id, collector
+     ),
+     consec AS (
+       SELECT r.target_id, r.collector, count(*)::int AS consecutive_failures
+       FROM runs r
+       LEFT JOIN first_success_rn s
+         ON s.target_id = r.target_id AND s.collector = r.collector
+       WHERE r.status = 'failed' AND (s.rn IS NULL OR r.rn < s.rn)
+       GROUP BY r.target_id, r.collector
+     )
+     SELECT b.target_id, b.collector,
+            ls.at::text                    AS last_success_at,
+            ls.rows_written::int           AS rows_last_success,
+            lf.at::text                    AS last_failure_at,
+            lf.error                       AS last_error,
+            COALESCE(c.consecutive_failures, 0) AS consecutive_failures,
+            (ls.at IS NULL OR ls.at < now() - interval '48 hours') AS stale
+     FROM (SELECT DISTINCT target_id, collector FROM runs) b
+     LEFT JOIN last_success ls ON ls.target_id = b.target_id AND ls.collector = b.collector
+     LEFT JOIN last_failure lf ON lf.target_id = b.target_id AND lf.collector = b.collector
+     LEFT JOIN consec c        ON c.target_id  = b.target_id AND c.collector  = b.collector
+     ORDER BY b.target_id, b.collector`,
+    params,
+  );
+  return {
+    note: "Per target × collector ingestion health. stale = no successful run in 48h — other tools' zeros for that target/family mean 'no fresh data', not inactivity. '(all targets)' rows are collectors that run once for every target (social, meta-ads).",
+    staleAfterHours: 48,
+    rows,
+  };
+}
+
 /** price_assortment — price ranges and assortment, by competitor/brand. */
 export async function priceAssortment(pool: Pool, opts: { competitor?: string; brand?: string }) {
   const params: unknown[] = [];

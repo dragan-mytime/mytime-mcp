@@ -5,12 +5,21 @@ import type { DigestResult } from "../src/index.js";
 // No Gemini key → renderDigestWithPrompt must use the deterministic template.
 vi.stubEnv("GEMINI_API_KEY", "");
 
+const freshOk = { lastSuccessAt: "2026-06-29T04:00:00Z", stale: false };
+const freshStale = { lastSuccessAt: null, stale: true };
+
 const fakeDigest: DigestResult = {
   generatedFor: "2026-06-29",
+  windowDays: 1,
   note: "Test digest",
   competitors: [
     {
       targetId: "competitor-alpha",
+      dataFreshness: {
+        products: freshOk,
+        ads: freshOk,
+        social: freshOk,
+      },
       sales: {
         newlyDiscounted: 5,
         ended: 2,
@@ -68,5 +77,34 @@ describe("templateDigest", () => {
     const html = templateDigest(fakeDigest);
     expect(html).toContain("Daily competitor digest");
     expect(html).toContain("Дневен преглед");
+  });
+
+  it("shows weekly heading when windowDays > 1", () => {
+    const weeklyDigest: DigestResult = { ...fakeDigest, windowDays: 7 };
+    const html = templateDigest(weeklyDigest);
+    expect(html).toContain("Weekly competitor digest");
+    expect(html).toContain("Неделен преглед");
+  });
+
+  it("renders stale-freshness warning instead of data for stale sections", () => {
+    const staleDigest: DigestResult = {
+      ...fakeDigest,
+      competitors: [
+        {
+          ...fakeDigest.competitors[0]!,
+          dataFreshness: {
+            products: freshStale,
+            ads: freshStale,
+            social: { lastSuccessAt: "2026-06-27T10:00:00Z", stale: true },
+          },
+        },
+      ],
+    };
+    const html = templateDigest(staleDigest);
+    // Stale sections should show the warning, not data values
+    expect(html).toContain("no fresh data since");
+    // Normal metrics should NOT appear (e.g., the on_sale_today count)
+    expect(html).not.toContain("On sale today");
+    expect(html).not.toContain("Active ads");
   });
 });
