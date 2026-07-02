@@ -57,16 +57,14 @@ export async function apifyRun<T = Record<string, unknown>>(
   actor: string,
   input: unknown,
 ): Promise<T[]> {
+  // D3: token in Authorization header — keeps it out of URLs/logs/error echoes.
   const token = requireEnv("APIFY_TOKEN");
-  const res = await fetch(
-    `https://api.apify.com/v2/acts/${actor}/run-sync-get-dataset-items?token=${token}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
-      signal: AbortSignal.timeout(300_000),
-    },
-  );
+  const res = await fetch(`https://api.apify.com/v2/acts/${actor}/run-sync-get-dataset-items`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(input),
+    signal: AbortSignal.timeout(300_000),
+  });
   if (!res.ok) throw new Error(`Apify ${actor} HTTP ${res.status}`);
   return (await res.json()) as T[];
 }

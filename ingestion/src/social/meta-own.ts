@@ -9,10 +9,14 @@ import { estimateReach } from "./reach.js";
 
 const GRAPH = "https://graph.facebook.com/v23.0";
 
+// D3: token in Authorization header — keeps it out of URLs/logs.
+function metaHeaders(): Record<string, string> {
+  return { Authorization: `Bearer ${requireEnv("META_ACCESS_TOKEN")}` };
+}
+
 async function graphGet(node: string, fields: string): Promise<Record<string, unknown>> {
-  const token = requireEnv("META_ACCESS_TOKEN");
-  const url = `${GRAPH}/${node}?fields=${fields}&access_token=${encodeURIComponent(token)}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  const url = `${GRAPH}/${node}?fields=${fields}`;
+  const res = await fetch(url, { headers: metaHeaders(), signal: AbortSignal.timeout(20_000) });
   const json = (await res.json()) as Record<string, unknown> & { error?: { message?: string } };
   if (json.error) throw new Error(`Meta Graph API: ${json.error.message ?? "error"}`);
   return json;
@@ -20,9 +24,8 @@ async function graphGet(node: string, fields: string): Promise<Record<string, un
 
 /** IG media insights use ?metric= (not ?fields=). Returns the first metric value or null. */
 async function graphInsight(mediaId: string, metric: string): Promise<number | null> {
-  const token = requireEnv("META_ACCESS_TOKEN");
-  const url = `${GRAPH}/${mediaId}/insights?metric=${metric}&access_token=${encodeURIComponent(token)}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  const url = `${GRAPH}/${mediaId}/insights?metric=${metric}`;
+  const res = await fetch(url, { headers: metaHeaders(), signal: AbortSignal.timeout(20_000) });
   const json = (await res.json()) as {
     data?: { values?: { value?: number }[] }[];
     error?: unknown;
@@ -33,9 +36,8 @@ async function graphInsight(mediaId: string, metric: string): Promise<number | n
 
 /** Like graphInsight but returns the value as an OBJECT (e.g. post_activity_by_action_type). */
 async function graphInsightObj(id: string, metric: string): Promise<Record<string, number> | null> {
-  const token = requireEnv("META_ACCESS_TOKEN");
-  const url = `${GRAPH}/${id}/insights?metric=${metric}&access_token=${encodeURIComponent(token)}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  const url = `${GRAPH}/${id}/insights?metric=${metric}`;
+  const res = await fetch(url, { headers: metaHeaders(), signal: AbortSignal.timeout(20_000) });
   const json = (await res.json()) as {
     data?: { values?: { value?: unknown }[] }[];
     error?: unknown;

@@ -137,6 +137,60 @@ ${inventoryBlock}
 ${undercutsBlock}`;
 }
 
+// ── D6: HTML sanitizer for Gemini output ─────────────────────────────────────
+// Allowlist: h2, h3, p, ul, ol, li, strong, em, br, a (https:// href only).
+// Everything else is stripped. No new runtime dependencies.
+
+const ALLOWED_TAGS = new Set(["h2", "h3", "p", "ul", "ol", "li", "strong", "em", "br", "a"]);
+
+/**
+ * Sanitize AI-generated HTML to an allowlist of safe tags.
+ * - Strips all `on*` event attributes and `style`/`class` attrs from every tag.
+ * - For <a>: only keeps `href` when it starts with `https?://`; strips everything else.
+ * - Strips script, style, iframe and all other non-allowlisted tags entirely (including their content
+ *   for script/style/iframe; for others just the tag itself is removed, content preserved).
+ */
+export function sanitizeDigestHtml(html: string): string {
+  // Remove script/style/iframe elements including their inner content.
+  let out = html.replace(/<(script|style|iframe)[\s\S]*?<\/\1\s*>/gi, "");
+
+  // Process remaining tags: keep allowed, strip others.
+  out = out.replace(/<\/?([a-z][a-z0-9]*)[^>]*>/gi, (match, tag: string) => {
+    const tagLower = tag.toLowerCase();
+    if (!ALLOWED_TAGS.has(tagLower)) return "";
+
+    const isSelfClose = /\/\s*>$/.test(match);
+    const isClose = /^<\//.test(match);
+
+    if (tagLower === "br") return "<br>";
+    if (isClose) return `</${tagLower}>`;
+
+    if (tagLower === "a") {
+      // Extract href attribute value (double or single quoted).
+      const hrefMatch = match.match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*))/i);
+      const href = hrefMatch?.[1] ?? hrefMatch?.[2] ?? hrefMatch?.[3] ?? "";
+      if (/^https?:\/\//i.test(href)) {
+        return `<a href="${href.replace(/"/g, "&quot;")}" rel="noopener noreferrer">`;
+      }
+      // No safe href → render as <span> so content is preserved but link is neutralized.
+      return "<span>";
+    }
+
+    // For all other allowed tags: emit just the bare tag with no attributes.
+    return isSelfClose ? `<${tagLower}>` : `<${tagLower}>`;
+  });
+
+  // Patch closing tags for <a> that we replaced with <span>.
+  // We can't easily do this in a single pass without a parser, so we do a
+  // second-pass: any </a> that was NOT converted yet might be left; since
+  // we replaced opening <a> with either <a...> or <span>, we need to close
+  // them appropriately. Simplest safe approach: close remaining </a> as </a>
+  // (they're already stripped of bad content since we just emitted safe openers).
+  // The above regex already handles </a> → </a> via the isClose branch for 'a'.
+
+  return out;
+}
+
 /** Deterministic bilingual fallback (EN then MK) used when Gemini is unavailable. */
 export function templateDigest(digest: DigestResult): string {
   const weekly = digest.windowDays > 1;
@@ -173,11 +227,12 @@ export async function geminiNarrate(
 ): Promise<string | null> {
   const key = apiKey ?? optionalEnv("GEMINI_API_KEY");
   if (!key) return null;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+  // D3: API key in header — keeps it out of URLs, logs, and error echoes.
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
         system_instruction: { parts: [{ text: promptBody }] },
         contents: [{ parts: [{ text: JSON.stringify(digest) }] }],
@@ -240,6 +295,7 @@ export async function renderDigestWithPrompt(
       : `MY:TIME — Дневен преглед / Daily digest (${digest.generatedFor})`;
   const narrated = await geminiNarrate(digest, promptBody, apiKey);
   const usedFallback = narrated == null;
-  const inner = narrated ?? templateDigest(digest);
+  // D6: sanitize AI-generated HTML before embedding in the email.
+  const inner = narrated != null ? sanitizeDigestHtml(narrated) : templateDigest(digest);
   return { subject, html: emailShell(subject, inner), usedFallback };
 }

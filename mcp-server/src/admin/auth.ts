@@ -126,12 +126,20 @@ export const requireAdmin: RequestHandler = async (req, res, next) => {
   try {
     const tok = readCookie(req.headers.cookie);
     const s = tok ? await verifySession(tok) : null;
-    if (s) {
-      (req as unknown as Record<string, unknown>).admin = s;
-      next();
-    } else {
+    if (!s) {
       res.redirect("/admin/auth/login");
+      return;
     }
+    // A13/D5: re-validate the session user against authorized_users on each request
+    // so that deactivations or role changes take effect immediately without waiting
+    // for the 8h cookie to expire.
+    const u = await lookupAuthorizedUser(adminWritePool(), s.email);
+    if (!u?.active || u.role !== "admin") {
+      res.redirect("/admin/auth/login");
+      return;
+    }
+    (req as unknown as Record<string, unknown>).admin = s;
+    next();
   } catch {
     res.redirect("/admin/auth/login");
   }

@@ -34,6 +34,40 @@ export async function getClient(
   return rows[0]?.client;
 }
 
+// ── A12: in-memory map sweep + hard cap ──────────────────────────────────────
+// Expired entries accumulate if a login is never completed (the caller never
+// calls takePending/deleteCode). Sweep every 10 minutes and cap at 10k entries.
+
+const MAP_CAP = 10_000;
+const SWEEP_INTERVAL_MS = 10 * 60_000;
+
+/**
+ * Exported for testing: sweep both maps, evict expired entries, return counts.
+ * `nowMs` defaults to Date.now() so tests can inject a fake clock.
+ */
+export function sweepMaps(nowMs = Date.now()): { pendingEvicted: number; codesEvicted: number } {
+  let pendingEvicted = 0;
+  for (const [k, v] of pending) {
+    if (nowMs - v.createdAt >= 10 * 60_000) {
+      pending.delete(k);
+      pendingEvicted++;
+    }
+  }
+  let codesEvicted = 0;
+  const nowSec = nowMs / 1000;
+  for (const [k, v] of codes) {
+    if (v.expiresAt <= nowSec) {
+      codes.delete(k);
+      codesEvicted++;
+    }
+  }
+  return { pendingEvicted, codesEvicted };
+}
+
+// Start the periodic sweep (unref'd so it doesn't keep the process alive).
+const _sweepTimer = setInterval(() => sweepMaps(), SWEEP_INTERVAL_MS);
+if (typeof _sweepTimer.unref === "function") _sweepTimer.unref();
+
 // ── Pending Google authorizations (keyed by the state we send to Google) ──────
 export interface PendingAuth {
   clientId: string;
@@ -45,7 +79,13 @@ export interface PendingAuth {
   createdAt: number;
 }
 const pending = new Map<string, PendingAuth>();
-export const putPending = (state: string, p: PendingAuth): void => void pending.set(state, p);
+export function putPending(state: string, p: PendingAuth): void {
+  if (pending.size >= MAP_CAP) {
+    console.warn("[auth/store] pending map at cap (%d); rejecting new entry", MAP_CAP);
+    throw new Error("server_error: too many concurrent authorization requests");
+  }
+  pending.set(state, p);
+}
 export function takePending(state: string): PendingAuth | undefined {
   const p = pending.get(state);
   if (p) pending.delete(state);
@@ -64,7 +104,13 @@ export interface AuthCode {
   expiresAt: number; // epoch seconds
 }
 const codes = new Map<string, AuthCode>();
-export const putCode = (code: string, c: AuthCode): void => void codes.set(code, c);
+export function putCode(code: string, c: AuthCode): void {
+  if (codes.size >= MAP_CAP) {
+    console.warn("[auth/store] codes map at cap (%d); rejecting new entry", MAP_CAP);
+    throw new Error("server_error: too many pending authorization codes");
+  }
+  codes.set(code, c);
+}
 /** Peek (used twice: PKCE challenge lookup, then exchange). Returns if unexpired. */
 export function getCode(code: string): AuthCode | undefined {
   const c = codes.get(code);
@@ -78,8 +124,13 @@ export interface RefreshRec {
   role: Role;
   clientId: string;
   scopes: string[];
+  createdAt: Date;
 }
-export async function putRefresh(pool: Pool, t: string, r: RefreshRec): Promise<void> {
+export async function putRefresh(
+  pool: Pool,
+  t: string,
+  r: Omit<RefreshRec, "createdAt">,
+): Promise<void> {
   await pool.query(
     `INSERT INTO oauth_refresh_tokens (token_hash, email, role, client_id, scopes)
      VALUES ($1, $2, $3, $4, $5) ON CONFLICT (token_hash) DO NOTHING`,
@@ -92,14 +143,49 @@ export async function getRefresh(pool: Pool, t: string): Promise<RefreshRec | un
     role: Role;
     client_id: string;
     scopes: string[];
-  }>("SELECT email, role, client_id, scopes FROM oauth_refresh_tokens WHERE token_hash = $1", [
-    hashToken(t),
-  ]);
+    created_at: Date;
+  }>(
+    "SELECT email, role, client_id, scopes, created_at FROM oauth_refresh_tokens WHERE token_hash = $1",
+    [hashToken(t)],
+  );
   const row = rows[0];
   return row
-    ? { email: row.email, role: row.role, clientId: row.client_id, scopes: row.scopes }
+    ? {
+        email: row.email,
+        role: row.role,
+        clientId: row.client_id,
+        scopes: row.scopes,
+        createdAt: row.created_at,
+      }
     : undefined;
 }
 export async function deleteRefresh(pool: Pool, t: string): Promise<void> {
   await pool.query("DELETE FROM oauth_refresh_tokens WHERE token_hash = $1", [hashToken(t)]);
+}
+
+/** D4: replace old refresh token with a new one in a single transaction. */
+export async function rotateRefresh(
+  pool: Pool,
+  oldToken: string,
+  newToken: string,
+  r: Omit<RefreshRec, "createdAt">,
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM oauth_refresh_tokens WHERE token_hash = $1", [
+      hashToken(oldToken),
+    ]);
+    await client.query(
+      `INSERT INTO oauth_refresh_tokens (token_hash, email, role, client_id, scopes)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [hashToken(newToken), r.email, r.role, r.clientId, JSON.stringify(r.scopes)],
+    );
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 }

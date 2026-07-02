@@ -1,6 +1,7 @@
 import { dailyDigest, getAppSettings } from "@mytime/db";
 import type { Request } from "express";
 import { adminWriteDb, adminWritePool } from "../../writePool.js";
+import { esc as escHtml } from "../render.js";
 
 // ── Data gathering ──────────────────────────────────────────────────────────
 
@@ -287,7 +288,7 @@ export async function render(_req: Request): Promise<string> {
   try {
     payload = await gather();
   } catch (err) {
-    return `<p class="error">Dashboard failed to load: ${(err as Error).message}</p>`;
+    return `<p class="error">Dashboard failed to load: ${escHtml((err as Error).message)}</p>`;
   }
   // Embed safely inside a <script> tag.
   const json = JSON.stringify(payload).replace(/</g, "\\u003c");
@@ -369,6 +370,8 @@ const DASH_JS = String.raw`
   function pct(n){ return n==null ? '—' : Math.round(n)+'%'; }
   function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
   function bar(p){ if(p==null) return '—'; var w=Math.max(2,Math.round(p*0.9)); return '<span class="bartrack"><span class="bar" style="width:'+w+'px"></span></span>'+Math.round(p)+'%'; }
+  // D2: only allow http/https URLs in href/src to block javascript: schemes.
+  function safeUrl(u){ return (u && /^https?:\/\//i.test(u)) ? u : null; }
 
   var GLAB={mens:'Men',womens:'Women',unisex:'Unisex',kids:'Kids'};
   function gmatch(g,f){ if(!f) return true; if(f==='__none') return !g; return g===f; }
@@ -470,8 +473,9 @@ const DASH_JS = String.raw`
       var list=ads.filter(function(a){ return (!newOnly||a.isNew)&&(!bestOnly||a.isBest); });
       var grid=list.map(function(a){
         var thumb;
-        if(a.mediaUrl && a.mediaType!=='VIDEO'){
-          thumb='<img class="adthumb" src="'+esc(a.mediaUrl)+'" loading="lazy" onerror="this.className=\'adthumb ph\';this.removeAttribute(\'src\');this.textContent=\'image expired\';">';
+        var adMediaSafe=safeUrl(a.mediaUrl);
+        if(adMediaSafe && a.mediaType!=='VIDEO'){
+          thumb='<img class="adthumb" src="'+esc(adMediaSafe)+'" loading="lazy" onerror="this.className=\'adthumb ph\';this.removeAttribute(\'src\');this.textContent=\'image expired\';">';
         } else if(a.mediaType==='VIDEO'){
           thumb='<div class="adthumb ph">video <span class="vidtag">PLAY</span></div>';
         } else { thumb='<div class="adthumb ph">no media</div>'; }
@@ -479,7 +483,7 @@ const DASH_JS = String.raw`
         var title=a.title && a.title.indexOf('{{')<0 ? a.title : '(dynamic product ad)';
         return '<div class="adcard">'+thumb+'<div class="adbody"><div class="adtitle">'+esc(title)+'</div>'
           +'<div class="admeta">'+badges+esc(nameOf[a.competitor]||a.competitor)+' · '+(a.days!=null?a.days+'d':'?')
-          +(a.snapshotUrl?' · <a href="'+esc(a.snapshotUrl)+'" target="_blank" rel="noopener">library ↗</a>':'')+'</div></div></div>';
+          +(safeUrl(a.snapshotUrl)?' · <a href="'+esc(safeUrl(a.snapshotUrl))+'" target="_blank" rel="noopener">library ↗</a>':'')+'</div></div></div>';
       }).join('');
       document.getElementById('ad-grid').innerHTML = grid || '<p class="secnote">No ads for this filter.</p>';
     }
@@ -497,13 +501,14 @@ const DASH_JS = String.raw`
     var body=keys.length ? keys.map(function(cid){
       var list=groups[cid];
       var cards=list.map(function(p){
-        var thumb=p.mediaUrl
-          ? '<img class="adthumb" src="'+esc(p.mediaUrl)+'" loading="lazy" onerror="this.className=\'adthumb ph\';this.removeAttribute(\'src\');this.textContent=\'media expired\';">'
+        var pMediaSafe=safeUrl(p.mediaUrl);
+        var thumb=pMediaSafe
+          ? '<img class="adthumb" src="'+esc(pMediaSafe)+'" loading="lazy" onerror="this.className=\'adthumb ph\';this.removeAttribute(\'src\');this.textContent=\'media expired\';">'
           : '<div class="adthumb ph">no media</div>';
         var cap=p.caption ? (p.caption.length>90 ? p.caption.slice(0,90)+'…' : p.caption) : '(no caption)';
         var stats='❤ '+fmt(p.likes)+' · 💬 '+fmt(p.comments)+(p.views!=null?' · ▶ '+fmt(p.views):'');
         var reach=p.estimatedReach!=null ? '<span class="badge-off">reach ~'+fmt(p.estimatedReach)+' ('+esc(p.reachSource||'?')+')</span>' : '';
-        var link=p.permalink ? ' <a href="'+esc(p.permalink)+'" target="_blank" rel="noopener">open ↗</a>' : '';
+        var link=safeUrl(p.permalink) ? ' <a href="'+esc(safeUrl(p.permalink))+'" target="_blank" rel="noopener">open ↗</a>' : '';
         return '<div class="adcard">'+thumb+'<div class="adbody"><div class="adtitle">'+esc(p.platform)+' · eng '+fmt(p.engagement)+'</div>'
           +'<div class="admeta">'+esc(cap)+'</div>'
           +'<div class="admeta">'+stats+'</div>'
