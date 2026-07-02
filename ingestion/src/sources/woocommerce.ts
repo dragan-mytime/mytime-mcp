@@ -214,7 +214,9 @@ export function mapProduct(p: WcProduct): ProductObservation {
     externalId: String(p.sku || p.id),
     name: cleanText(p.name) ?? String(p.id),
     brand,
-    modelRef: parseModelRef(cleanText(p.name), cleanText(p.sku), cleanText(p.slug)),
+    modelRef: ((r) => (r?.source !== "slug" ? (r?.ref ?? null) : null))(
+      parseModelRef(cleanText(p.name), cleanText(p.sku), cleanText(p.slug)),
+    ),
     category,
     productType: normalizeType(category, cleanText(p.name)),
     gender: normalizeGender(genderTerm) ?? normalizeGender(category),

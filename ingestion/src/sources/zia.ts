@@ -43,7 +43,7 @@ export function map(it: ZiaItem, base: string): ProductObservation {
     externalId: it._id,
     name: name ?? it._id,
     brand: "Zia",
-    modelRef: parseModelRef(name, null, null),
+    modelRef: parseModelRef(name, null, null)?.ref ?? null,
     category: cleanText(it.category?.name),
     productType: normalizeType(it.category?.name ?? null, name, "jewelry"),
     gender: normalizeGender(it.category?.name) ?? normalizeGender(name) ?? "womens",

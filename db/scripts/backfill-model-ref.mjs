@@ -26,7 +26,9 @@ try {
   if (APPLY) await client.query("BEGIN");
   for (const r of rows) {
     const sku = /^[0-9]+$/.test(r.external_id ?? "") ? null : r.external_id; // numeric ext = db id
-    const next = parseModelRef(r.name, sku, r.model_ref);
+    const parsed = parseModelRef(r.name, sku, r.model_ref);
+    // Never use slug-derived refs as match keys (B7).
+    const next = parsed?.source !== "slug" ? (parsed?.ref ?? null) : null;
     if (next && next !== r.model_ref) {
       if (APPLY)
         await client.query("UPDATE products SET model_ref = $1 WHERE id = $2", [next, r.id]);

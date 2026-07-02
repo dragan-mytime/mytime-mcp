@@ -665,48 +665,91 @@ interface SkuMatchRow {
   key: string;
   mt_name: string;
   comp_name: string;
+  mt_bkey: string;
+  comp_bkey: string;
   mt_price: number;
   comp_price: number;
   mt_vs_comp_pct: number | null;
+  brand_unverified: boolean;
+}
+
+/**
+ * Internal SQL fragment that builds the canonical normalized-ref + brand CTEs
+ * used by both compareSkus and the undercut-alert digest section.
+ *
+ * Changes vs original (B7, B8):
+ *
+ *  B7a — slug-sourced refs: model_ref values that are all-uppercase-alpha + hyphens
+ *         (no digit) are characteristic of URL-slug fallbacks. These are excluded from
+ *         matching by requiring the key to have at least one digit after normalization
+ *         — consistent with how refScore already gates name-derived refs.
+ *         (The real fix is callers not storing slug refs; the SQL guard is defense-in-depth
+ *         for refs already in the DB.)
+ *
+ *  B7b — brand gate: the join now requires `mt.bkey = comp.bkey` when either side
+ *         has a known brand (non-empty bkey). When both sides are brandless the match
+ *         is allowed but flagged `brandUnverified: true` in output.
+ *
+ *  B8  — coherent rows: key-collision collapse switched from max(name)/min(eff) mixing
+ *         fields across different products to `DISTINCT ON (key) ORDER BY key,
+ *         effective_price ASC`, so each side contributes one coherent (cheapest variant)
+ *         product row — name/brand/price all from the same product.
+ */
+function compareSkusCteFragment(): string {
+  return `
+    latest AS (
+      SELECT DISTINCT ON (product_id) product_id, COALESCE(sale_price, price)::float8 AS eff
+      FROM prices ORDER BY product_id, captured_date DESC
+    ),
+    norm AS (
+      SELECT t.is_self, p.target_id,
+        regexp_replace(upper(p.model_ref), '[^A-Z0-9]', '', 'g') AS key,
+        p.name, l.eff,
+        CASE WHEN upper(coalesce(p.brand,'')) LIKE 'CASIO%' THEN 'CASIO'
+             ELSE upper(coalesce(p.brand,'')) END AS bkey,
+        (upper(coalesce(p.brand,'') || ' ' || p.name) ~ 'G[ -]?SHOCK') AS gshock
+      FROM products p JOIN targets t ON t.id = p.target_id
+      JOIN latest l ON l.product_id = p.id
+      WHERE p.active AND p.model_ref IS NOT NULL
+        AND length(regexp_replace(upper(p.model_ref),'[^A-Z0-9]','','g')) >= 5
+        -- B7a: exclude slug-derived refs (no digit after stripping → slug-like)
+        AND regexp_replace(upper(p.model_ref),'[^A-Z0-9]','','g') ~ '[0-9]'
+    ),
+    -- B8: DISTINCT ON picks one coherent row per key (cheapest effective price),
+    -- so name/brand/price all come from the same product variant.
+    mt AS (
+      SELECT DISTINCT ON (key) key, name, bkey, gshock, eff
+      FROM norm WHERE is_self
+      ORDER BY key, eff ASC
+    ),
+    comp AS (
+      SELECT DISTINCT ON (target_id, key) target_id, key, name, bkey, gshock, eff
+      FROM norm WHERE NOT is_self
+      ORDER BY target_id, key, eff ASC
+    )`;
 }
 
 /**
  * Match MY:TIME products to a competitor on the normalized manufacturer reference
- * (model_ref stripped to uppercase alphanumerics, ≥5 chars), brand-compatible, and
- * Casio-correct (Timeless/Vintage collapse to CASIO; G-Shock never matches a
- * non-G-Shock). Compares the latest effective price (sale ?? regular) on each side.
+ * (model_ref stripped to uppercase alphanumerics, ≥5 chars, must contain a digit),
+ * brand-compatible (B7b), and Casio-correct (Timeless/Vintage collapse to CASIO;
+ * G-Shock never matches a non-G-Shock). Compares the latest effective price
+ * (sale ?? regular) on each side. Slug-sourced refs excluded from matching (B7a).
+ * Each side contributes one coherent product per key (cheapest variant, B8).
  */
 export async function compareSkus(pool: Pool, opts: { competitor?: string }) {
   const { rows } = await pool.query<SkuMatchRow>(
-    `WITH latest AS (
-       SELECT DISTINCT ON (product_id) product_id, COALESCE(sale_price, price)::float8 AS eff
-       FROM prices ORDER BY product_id, captured_date DESC
-     ),
-     norm AS (
-       SELECT t.is_self, p.target_id,
-         regexp_replace(upper(p.model_ref), '[^A-Z0-9]', '', 'g') AS key,
-         p.name, l.eff,
-         CASE WHEN upper(coalesce(p.brand,'')) LIKE 'CASIO%' THEN 'CASIO'
-              ELSE upper(coalesce(p.brand,'')) END AS bkey,
-         (upper(coalesce(p.brand,'') || ' ' || p.name) ~ 'G[ -]?SHOCK') AS gshock
-       FROM products p JOIN targets t ON t.id = p.target_id
-       JOIN latest l ON l.product_id = p.id
-       WHERE p.active AND p.model_ref IS NOT NULL
-         AND length(regexp_replace(upper(p.model_ref),'[^A-Z0-9]','','g')) >= 5
-     ),
-     mt AS (
-       SELECT key, max(name) AS name, max(bkey) AS bkey, bool_or(gshock) AS gshock, min(eff) AS eff
-       FROM norm WHERE is_self GROUP BY key
-     ),
-     comp AS (
-       SELECT target_id, key, max(name) AS name, max(bkey) AS bkey, bool_or(gshock) AS gshock, min(eff) AS eff
-       FROM norm WHERE NOT is_self GROUP BY target_id, key
-     )
-     SELECT comp.target_id, mt.key, mt.name AS mt_name, comp.name AS comp_name,
+    `WITH ${compareSkusCteFragment()}
+     SELECT comp.target_id, mt.key,
+       mt.name AS mt_name, comp.name AS comp_name,
+       mt.bkey AS mt_bkey, comp.bkey AS comp_bkey,
        mt.eff AS mt_price, comp.eff AS comp_price,
-       round(100.0*(comp.eff - mt.eff)/NULLIF(comp.eff,0)) AS mt_vs_comp_pct
+       round(100.0*(comp.eff - mt.eff)/NULLIF(comp.eff,0)) AS mt_vs_comp_pct,
+       -- B7b: brand_unverified when both sides are brandless (blank-blank match)
+       (mt.bkey = '' AND comp.bkey = '') AS brand_unverified
      FROM mt JOIN comp ON comp.key = mt.key
-       AND (mt.bkey = comp.bkey OR mt.bkey = '' OR comp.bkey = '')
+       -- B7b: brand gate — must agree when either side has a brand
+       AND (mt.bkey = comp.bkey OR (mt.bkey = '' AND comp.bkey = ''))
        AND mt.gshock = comp.gshock
      WHERE ($1::text IS NULL OR comp.target_id = $1)
      ORDER BY comp.target_id, abs(mt.eff - comp.eff) DESC`,
@@ -731,7 +774,421 @@ export async function compareSkus(pool: Pool, opts: { competitor?: string }) {
       mytime: Math.round(r.mt_price),
       competitor: Math.round(r.comp_price),
       deltaPct: r.mt_vs_comp_pct,
+      brandUnverified: r.brand_unverified,
     })),
   }));
-  return { comparedAt: new Date().toISOString().slice(0, 10), currency: "MKD", results };
+  return {
+    note: "Matched on normalized manufacturer ref (≥5 alphanumerics, must contain a digit). Slug-derived refs excluded (B7). Brand agreement required when either side has a known brand; blank-blank matches are flagged brandUnverified. Each side contributes one coherent product per ref key (cheapest variant, B8).",
+    comparedAt: new Date().toISOString().slice(0, 10),
+    currency: "MKD",
+    results,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// E1: price_history
+// ---------------------------------------------------------------------------
+
+/**
+ * price_history — full time series (date, price, discountPct) per product plus
+ * a summary (current, min, max, biggest single-day drop). At least one filter
+ * is required; up to `limit` products are returned.
+ *
+ * Source note: prices come from web scrapes (regular + sale_price columns); the
+ * effective price used for the summary is COALESCE(sale_price, price).
+ */
+export async function priceHistory(
+  pool: Pool,
+  opts: {
+    competitor?: string;
+    brand?: string;
+    modelRef?: string;
+    q?: string;
+    days?: number;
+    limit?: number;
+  },
+) {
+  const days = Math.min(opts.days ?? 90, 365);
+  const limit = Math.min(opts.limit ?? 20, 100);
+
+  const params: unknown[] = [days];
+  const conds: string[] = ["p.active", `pr.captured_date >= current_date - $${params.length}::int`];
+
+  if (opts.competitor) {
+    params.push(opts.competitor);
+    conds.push(`p.target_id = $${params.length}`);
+  }
+  if (opts.brand) {
+    params.push(opts.brand.toLowerCase());
+    conds.push(`lower(p.brand) = $${params.length}`);
+  }
+  if (opts.modelRef) {
+    params.push(opts.modelRef.toUpperCase());
+    conds.push(`upper(p.model_ref) = $${params.length}`);
+  }
+  if (opts.q) {
+    params.push(`%${opts.q}%`);
+    conds.push(`p.name ILIKE $${params.length}`);
+  }
+
+  const { rows } = await pool.query(
+    `WITH series AS (
+       SELECT p.target_id, p.id AS product_id, p.name, p.brand, p.model_ref,
+              pr.captured_date,
+              pr.price::float8                          AS regular_price,
+              pr.sale_price::float8                     AS sale_price,
+              COALESCE(pr.sale_price, pr.price)::float8 AS eff_price,
+              pr.discount_pct::float8                   AS discount_pct
+       FROM prices pr
+       JOIN products p ON p.id = pr.product_id
+       WHERE ${conds.join(" AND ")}
+     ),
+     product_ids AS (
+       SELECT DISTINCT product_id FROM series
+       LIMIT ${limit}
+     )
+     SELECT s.target_id, s.product_id, s.name, s.brand, s.model_ref,
+            s.captured_date::text, s.eff_price, s.discount_pct
+     FROM series s
+     JOIN product_ids pi ON pi.product_id = s.product_id
+     ORDER BY s.product_id, s.captured_date`,
+    params,
+  );
+
+  // Group into per-product date series + summary
+  const products = new Map<
+    string,
+    {
+      targetId: string;
+      name: string;
+      brand: string | null;
+      modelRef: string | null;
+      series: { date: string; price: number; discountPct: number | null }[];
+    }
+  >();
+
+  for (const r of rows as {
+    target_id: string;
+    product_id: string;
+    name: string;
+    brand: string | null;
+    model_ref: string | null;
+    captured_date: string;
+    eff_price: number;
+    discount_pct: number | null;
+  }[]) {
+    if (!products.has(r.product_id)) {
+      products.set(r.product_id, {
+        targetId: r.target_id,
+        name: r.name,
+        brand: r.brand,
+        modelRef: r.model_ref,
+        series: [],
+      });
+    }
+    // biome-ignore lint/style/noNonNullAssertion: set unconditionally above
+    products.get(r.product_id)!.series.push({
+      date: r.captured_date,
+      price: Math.round(r.eff_price),
+      discountPct: r.discount_pct != null ? parseFloat(String(r.discount_pct)) : null,
+    });
+  }
+
+  const result = [...products.entries()].map(([, p]) => {
+    const prices = p.series.map((s) => s.price);
+    const current = prices[prices.length - 1] ?? null;
+    const min = prices.length ? Math.min(...prices) : null;
+    const max = prices.length ? Math.max(...prices) : null;
+
+    // Biggest single-day drop (day N price - day N-1 price, most negative)
+    let biggestDropPct: number | null = null;
+    let biggestDropDate: string | null = null;
+    for (let i = 1; i < p.series.length; i++) {
+      const prevEntry = p.series[i - 1];
+      const currEntry = p.series[i];
+      if (!prevEntry || !currEntry) continue;
+      const prev = prevEntry.price;
+      const curr = currEntry.price;
+      if (prev > 0 && curr < prev) {
+        const dropPct = Math.round(((prev - curr) / prev) * 100);
+        if (biggestDropPct === null || dropPct > biggestDropPct) {
+          biggestDropPct = dropPct;
+          biggestDropDate = currEntry.date;
+        }
+      }
+    }
+
+    return {
+      targetId: p.targetId,
+      name: p.name,
+      brand: p.brand,
+      modelRef: p.modelRef,
+      summary: { current, min, max, biggestDropPct, biggestDropDate },
+      series: p.series,
+    };
+  });
+
+  return {
+    note: "Effective price = COALESCE(sale_price, price). Prices come from web scrapes (captured once daily). discountPct is null when not on sale.",
+    periodDays: days,
+    currency: "MKD",
+    products: result,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// E4: assortment_gaps
+// ---------------------------------------------------------------------------
+
+/**
+ * assortment_gaps — brands a competitor carries that MY:TIME doesn't (and vice
+ * versa), with per-brand product count + min/median/max effective price for active
+ * products. Uses the same brand normalization as compareSkus (CASIO% collapse,
+ * case-insensitive).
+ */
+export async function assortmentGaps(pool: Pool, opts: { competitor: string }) {
+  const { rows } = await pool.query(
+    `WITH mt_brands AS (
+       SELECT CASE WHEN upper(p.brand) LIKE 'CASIO%' THEN 'CASIO' ELSE upper(p.brand) END AS bkey,
+              p.brand AS raw_brand
+       FROM products p
+       WHERE p.target_id IN (SELECT id FROM targets WHERE is_self = true)
+         AND p.active AND p.brand IS NOT NULL
+     ),
+     comp_brands AS (
+       SELECT CASE WHEN upper(p.brand) LIKE 'CASIO%' THEN 'CASIO' ELSE upper(p.brand) END AS bkey,
+              p.brand AS raw_brand
+       FROM products p
+       WHERE p.target_id = $1 AND p.active AND p.brand IS NOT NULL
+     ),
+     mt_only AS (
+       SELECT DISTINCT bkey FROM mt_brands
+       EXCEPT
+       SELECT DISTINCT bkey FROM comp_brands
+     ),
+     comp_only AS (
+       SELECT DISTINCT bkey FROM comp_brands
+       EXCEPT
+       SELECT DISTINCT bkey FROM mt_brands
+     ),
+     mt_prices AS (
+       SELECT CASE WHEN upper(p.brand) LIKE 'CASIO%' THEN 'CASIO' ELSE upper(p.brand) END AS bkey,
+              COALESCE(lp.sale_price, lp.price)::float8 AS eff
+       FROM products p
+       JOIN LATERAL (
+         SELECT price, sale_price FROM prices pr WHERE pr.product_id = p.id
+         ORDER BY captured_date DESC LIMIT 1
+       ) lp ON true
+       WHERE p.target_id IN (SELECT id FROM targets WHERE is_self = true)
+         AND p.active AND p.brand IS NOT NULL
+     ),
+     comp_prices AS (
+       SELECT CASE WHEN upper(p.brand) LIKE 'CASIO%' THEN 'CASIO' ELSE upper(p.brand) END AS bkey,
+              COALESCE(lp.sale_price, lp.price)::float8 AS eff
+       FROM products p
+       JOIN LATERAL (
+         SELECT price, sale_price FROM prices pr WHERE pr.product_id = p.id
+         ORDER BY captured_date DESC LIMIT 1
+       ) lp ON true
+       WHERE p.target_id = $1 AND p.active AND p.brand IS NOT NULL
+     )
+     SELECT 'comp_only' AS direction,
+            co.bkey,
+            count(cp.eff)::int              AS product_count,
+            round(min(cp.eff))              AS min_price,
+            round(percentile_cont(0.5) WITHIN GROUP (ORDER BY cp.eff)) AS median_price,
+            round(max(cp.eff))              AS max_price
+     FROM comp_only co
+     LEFT JOIN comp_prices cp ON cp.bkey = co.bkey
+     GROUP BY co.bkey
+
+     UNION ALL
+
+     SELECT 'mt_only' AS direction,
+            mo.bkey,
+            count(mp.eff)::int              AS product_count,
+            round(min(mp.eff))              AS min_price,
+            round(percentile_cont(0.5) WITHIN GROUP (ORDER BY mp.eff)) AS median_price,
+            round(max(mp.eff))              AS max_price
+     FROM mt_only mo
+     LEFT JOIN mt_prices mp ON mp.bkey = mo.bkey
+     GROUP BY mo.bkey
+     ORDER BY direction, product_count DESC`,
+    [opts.competitor],
+  );
+
+  const compOnly: unknown[] = [];
+  const mtOnly: unknown[] = [];
+  for (const r of rows as {
+    direction: string;
+    bkey: string;
+    product_count: number;
+    min_price: number | null;
+    median_price: number | null;
+    max_price: number | null;
+  }[]) {
+    const item = {
+      brand: r.bkey,
+      productCount: r.product_count,
+      priceRange: { min: r.min_price, median: r.median_price, max: r.max_price },
+    };
+    if (r.direction === "comp_only") compOnly.push(item);
+    else mtOnly.push(item);
+  }
+
+  return {
+    note: "Active products only. Brand keys normalized (CASIO% collapsed). comp_only = brands the competitor carries that MY:TIME doesn't; mt_only = brands MY:TIME carries that the competitor doesn't.",
+    competitor: opts.competitor,
+    currency: "MKD",
+    comp_only: compOnly,
+    mt_only: mtOnly,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// E5: promo_calendar
+// ---------------------------------------------------------------------------
+
+/**
+ * promo_calendar — detects discount waves per target from `prices` history.
+ *
+ * Algorithm (heuristic, documented):
+ *   1. For each day, count distinct active products where discount_pct > 0 (on sale).
+ *   2. Wave threshold T = max(5, 10% of that target's current active catalog size).
+ *   3. A wave starts on the first day count ≥ T. It continues through days with
+ *      count ≥ T, allowing gaps of ≤ 2 days (the scraper may miss a day). It ends
+ *      when count stays < T for 3+ consecutive days.
+ *   4. A wave with no end is "ongoing". Peak breadth = max daily count in the wave.
+ *   5. avgDepthPct = average of (avg discount_pct per day) over the wave days with
+ *      count ≥ T.
+ */
+export async function promoCalendar(pool: Pool, opts: { competitor?: string; days?: number }) {
+  const days = Math.min(opts.days ?? 90, 180);
+  const params: unknown[] = [days];
+  let filter = "";
+  if (opts.competitor) {
+    params.push(opts.competitor);
+    filter = `AND p.target_id = $${params.length}`;
+  }
+
+  // Daily discounted-product counts + avg depth per target
+  const { rows: dailyRows } = await pool.query(
+    `WITH active_catalog AS (
+       SELECT p.target_id, count(*)::int AS catalog_size
+       FROM products p
+       WHERE p.active ${filter.replace(/p\.target_id/, "p.target_id")}
+       GROUP BY p.target_id
+     ),
+     daily AS (
+       SELECT p.target_id, pr.captured_date,
+              count(*) FILTER (WHERE pr.discount_pct > 0)::int     AS on_sale_count,
+              avg(pr.discount_pct) FILTER (WHERE pr.discount_pct > 0) AS avg_depth_pct
+       FROM prices pr
+       JOIN products p ON p.id = pr.product_id
+       WHERE pr.captured_date >= current_date - $1::int
+         AND p.active ${filter}
+       GROUP BY p.target_id, pr.captured_date
+     )
+     SELECT d.target_id, d.captured_date::text AS day,
+            d.on_sale_count, d.avg_depth_pct::float8,
+            ac.catalog_size
+     FROM daily d
+     JOIN active_catalog ac ON ac.target_id = d.target_id
+     ORDER BY d.target_id, d.captured_date`,
+    params,
+  );
+
+  // Group by target and detect waves
+  type DayRow = {
+    target_id: string;
+    day: string;
+    on_sale_count: number;
+    avg_depth_pct: number | null;
+    catalog_size: number;
+  };
+
+  const byTarget = new Map<string, DayRow[]>();
+  for (const r of dailyRows as DayRow[]) {
+    const arr = byTarget.get(r.target_id) ?? [];
+    arr.push(r);
+    byTarget.set(r.target_id, arr);
+  }
+
+  const results = [...byTarget.entries()].map(([targetId, dayRows]) => {
+    const threshold = Math.max(5, Math.round((dayRows[0]?.catalog_size ?? 0) * 0.1));
+
+    // Detect waves: days ≥ threshold with ≤ 2-day gaps allowed
+    const waves: {
+      startDate: string;
+      endDate: string | null;
+      peakBreadth: number;
+      avgDepthPct: number | null;
+    }[] = [];
+
+    let waveStart: string | null = null;
+    let peakBreadth = 0;
+    let depthSum = 0;
+    let depthDays = 0;
+    let lastAboveDate: string | null = null;
+
+    for (const row of dayRows) {
+      const isAbove = row.on_sale_count >= threshold;
+
+      if (isAbove) {
+        if (waveStart === null) {
+          // New wave
+          waveStart = row.day;
+          peakBreadth = 0;
+          depthSum = 0;
+          depthDays = 0;
+        }
+        lastAboveDate = row.day;
+        peakBreadth = Math.max(peakBreadth, row.on_sale_count);
+        if (row.avg_depth_pct != null) {
+          depthSum += row.avg_depth_pct;
+          depthDays++;
+        }
+      } else if (waveStart !== null) {
+        // Check if we've exceeded the gap tolerance (2 days)
+        const lastDate = new Date(lastAboveDate!);
+        const currDate = new Date(row.day);
+        const gapDays = Math.round((currDate.getTime() - lastDate.getTime()) / 86400000);
+        if (gapDays > 2) {
+          // Wave ended
+          waves.push({
+            startDate: waveStart,
+            endDate: lastAboveDate,
+            peakBreadth,
+            avgDepthPct: depthDays > 0 ? Math.round((depthSum / depthDays) * 10) / 10 : null,
+          });
+          waveStart = null;
+          lastAboveDate = null;
+        }
+        // else: within gap tolerance, continue
+      }
+    }
+
+    // Close any ongoing wave
+    if (waveStart !== null) {
+      waves.push({
+        startDate: waveStart,
+        endDate: null, // ongoing
+        peakBreadth,
+        avgDepthPct: depthDays > 0 ? Math.round((depthSum / depthDays) * 10) / 10 : null,
+      });
+    }
+
+    return {
+      targetId,
+      catalogSize: dayRows[0]?.catalog_size ?? 0,
+      waveThreshold: threshold,
+      waves,
+    };
+  });
+
+  return {
+    note: `Wave = ≥max(5, 10% of active catalog) products on sale per day, with gaps of ≤2 days allowed (to handle scraper misses). endDate=null means the wave is ongoing. avgDepthPct = average of per-day avg discount_pct over wave days. Heuristic — tune threshold per business need.`,
+    periodDays: days,
+    results,
+  };
 }

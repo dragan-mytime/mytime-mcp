@@ -1,12 +1,15 @@
 import { dailyDigest } from "@mytime/db";
 import { z } from "zod";
 import {
+  assortmentGaps,
   compareMarketShare,
   compareSkus,
   competitorAds,
   dataHealth,
   inventoryVelocity,
   priceAssortment,
+  priceHistory,
+  promoCalendar,
   socialBenchmark,
   socialPosts,
 } from "../analytics.js";
@@ -200,5 +203,79 @@ export const tools: McpToolDef[] = [
       competitor: z.string().optional().describe("target id, e.g. 'b-watch'; omit for all targets"),
     },
     run: (pool, a) => dataHealth(pool, a as { competitor?: string }),
+  },
+  {
+    name: "price_history",
+    title: "Price & discount history (time series per product)",
+    description:
+      "Full price time series (date, effective price, discountPct) per product, plus a summary (current/min/max price, biggest single-day drop). At least one filter is required. Effective price = COALESCE(sale_price, price). Source: daily web scrapes.",
+    requiredRole: "analyst",
+    inputSchema: {
+      competitor: z.string().optional().describe("target id, e.g. 'b-watch'; filter by competitor"),
+      brand: z.string().optional().describe("brand name (case-insensitive exact match)"),
+      modelRef: z
+        .string()
+        .optional()
+        .describe("manufacturer reference (case-insensitive exact match, e.g. 'A168WA-1W')"),
+      q: z.string().optional().describe("product name ILIKE search (partial match)"),
+      days: z
+        .number()
+        .int()
+        .positive()
+        .max(365)
+        .optional()
+        .describe("lookback window in days (default 90, max 365)"),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .max(100)
+        .optional()
+        .describe("max products to return (default 20, max 100)"),
+    },
+    run: (pool, a) =>
+      priceHistory(
+        pool,
+        a as {
+          competitor?: string;
+          brand?: string;
+          modelRef?: string;
+          q?: string;
+          days?: number;
+          limit?: number;
+        },
+      ),
+  },
+  {
+    name: "assortment_gaps",
+    title: "Assortment gaps (brands each side carries exclusively)",
+    description:
+      "Brands a competitor carries that MY:TIME doesn't (comp_only) and vice versa (mt_only), with per-brand active product count and min/median/max effective price. Uses the same brand normalization as compare_skus (CASIO% collapsed). Active products only.",
+    requiredRole: "analyst",
+    inputSchema: {
+      competitor: z.string().describe("competitor target id, e.g. 'b-watch'"),
+    },
+    run: (pool, a) => assortmentGaps(pool, a as { competitor: string }),
+  },
+  {
+    name: "promo_calendar",
+    title: "Promo calendar (discount-wave detection per competitor)",
+    description:
+      "Detects promotional waves per competitor from price history. A wave = ≥max(5, 10% of active catalog) products on sale per day, with gaps of ≤2 days allowed. Returns wave start/end dates, peak breadth (max daily discounted count), and avg discount depth. Useful for planning MY:TIME campaigns around competitor sale seasons.",
+    requiredRole: "analyst",
+    inputSchema: {
+      competitor: z
+        .string()
+        .optional()
+        .describe("target id, e.g. 'bozinovski'; omit for all competitors"),
+      days: z
+        .number()
+        .int()
+        .positive()
+        .max(180)
+        .optional()
+        .describe("lookback window in days (default 90, max 180)"),
+    },
+    run: (pool, a) => promoCalendar(pool, a as { competitor?: string; days?: number }),
   },
 ];

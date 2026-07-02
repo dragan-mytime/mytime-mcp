@@ -64,6 +64,32 @@ export interface CompetitorDigest {
     newStockouts: string[];
     priceMoves: { name: string; from: number; to: number }[];
   };
+  /**
+   * Price undercuts (E2): SKUs where the competitor's effective price moved BELOW
+   * MY:TIME's effective price (newlyUndercut) or above it (resolved) between the
+   * target's own two most recent capture dates. Uses the same matching rules as
+   * compareSkus: normalized ref + brand agreement, no slug-derived refs.
+   */
+  priceUndercuts: {
+    newlyUndercut: {
+      ref: string;
+      name: string;
+      brand: string | null;
+      mtPrice: number;
+      compPrice: number;
+      deltaPct: number | null;
+    }[];
+    resolved: {
+      ref: string;
+      name: string;
+      brand: string | null;
+      mtPrice: number;
+      compPrice: number;
+      deltaPct: number | null;
+    }[];
+    totalNewlyUndercut: number;
+    totalResolved: number;
+  };
 }
 
 export interface DigestResult {
@@ -570,7 +596,151 @@ async function queryInventory(
   };
 }
 
-// ── 5. FRESHNESS (E3) ───────────────────────────────────────────────────────
+// ── 5. PRICE UNDERCUTS (E2) ─────────────────────────────────────────────────
+
+interface UndercutRow {
+  target_id: string;
+  key: string;
+  name: string;
+  brand: string | null;
+  mt_price_today: string;
+  comp_price_today: string;
+  mt_price_prior: string | null;
+  comp_price_prior: string | null;
+}
+
+/**
+ * Detect newly-undercut and resolved SKUs day-over-day (or week-over-week with
+ * days > 1). Uses the same normalized-ref + brand-gate matching rules as
+ * compareSkus:
+ *  - ref normalized to uppercase alphanumerics, ≥5 chars, must have a digit
+ *    (slug-derived refs excluded)
+ *  - brand agreement required when either side has a known brand
+ *  - MY:TIME vs every competitor, one query (not per-competitor loops)
+ *
+ * Cap: top 10 newly-undercut + 10 resolved per competitor (by |deltaPct| desc).
+ */
+async function queryPriceUndercuts(
+  db: Db,
+  competitorFilter: string | undefined,
+  days: number,
+): Promise<UndercutRow[]> {
+  const filterClause = competitorFilter ? sql`AND comp_p.target_id = ${competitorFilter}` : sql``;
+  const result = await db.execute(sql`
+    WITH
+    -- Latest two capture dates per target (prices side)
+    ${perTargetDatesCte(pricesDates(competitorFilter), days)},
+
+    -- Normalized ref + brand for MY:TIME products (active, non-slug refs)
+    mt_norm AS (
+      SELECT
+        p.id                                                                AS product_id,
+        regexp_replace(upper(p.model_ref), '[^A-Z0-9]', '', 'g')           AS key,
+        p.name,
+        CASE WHEN upper(coalesce(p.brand,'')) LIKE 'CASIO%' THEN 'CASIO'
+             ELSE upper(coalesce(p.brand,'')) END                           AS bkey
+      FROM products p
+      WHERE p.target_id IN (SELECT id FROM targets WHERE is_self = true)
+        AND p.active
+        AND p.model_ref IS NOT NULL
+        AND length(regexp_replace(upper(p.model_ref),'[^A-Z0-9]','','g')) >= 5
+        AND regexp_replace(upper(p.model_ref),'[^A-Z0-9]','','g') ~ '[0-9]'
+    ),
+    -- Latest MY:TIME effective price (single most recent row per product)
+    mt_latest_price AS (
+      SELECT DISTINCT ON (pr.product_id)
+        pr.product_id,
+        COALESCE(pr.sale_price, pr.price)::float8 AS eff
+      FROM prices pr
+      JOIN products p ON p.id = pr.product_id
+      WHERE p.target_id IN (SELECT id FROM targets WHERE is_self = true)
+      ORDER BY pr.product_id, pr.captured_date DESC
+    ),
+
+    -- Competitor effective prices on today's and prior capture dates
+    comp_today AS (
+      SELECT p.target_id, p.id AS product_id,
+        regexp_replace(upper(p.model_ref), '[^A-Z0-9]', '', 'g') AS key,
+        p.name, p.brand,
+        CASE WHEN upper(coalesce(p.brand,'')) LIKE 'CASIO%' THEN 'CASIO'
+             ELSE upper(coalesce(p.brand,'')) END AS bkey,
+        COALESCE(pr.sale_price, pr.price)::float8 AS eff
+      FROM prices pr
+      JOIN products p ON p.id = pr.product_id
+      JOIN latest l ON l.target_id = p.target_id AND pr.captured_date = l.d
+      WHERE NOT p.target_id IN (SELECT id FROM targets WHERE is_self = true)
+        AND p.active
+        AND p.model_ref IS NOT NULL
+        AND length(regexp_replace(upper(p.model_ref),'[^A-Z0-9]','','g')) >= 5
+        AND regexp_replace(upper(p.model_ref),'[^A-Z0-9]','','g') ~ '[0-9]'
+        ${filterClause}
+    ),
+    comp_prior AS (
+      SELECT p.target_id, p.id AS product_id,
+        regexp_replace(upper(p.model_ref), '[^A-Z0-9]', '', 'g') AS key,
+        COALESCE(pr.sale_price, pr.price)::float8 AS eff
+      FROM prices pr
+      JOIN products p ON p.id = pr.product_id
+      JOIN prior q ON q.target_id = p.target_id AND pr.captured_date = q.d
+      WHERE NOT p.target_id IN (SELECT id FROM targets WHERE is_self = true)
+        ${filterClause}
+    ),
+
+    -- Match: one coherent MT row + one coherent competitor row per key
+    mt_by_key AS (
+      SELECT DISTINCT ON (key) key, name, bkey, product_id
+      FROM mt_norm
+      ORDER BY key
+    ),
+    comp_today_by_key AS (
+      SELECT DISTINCT ON (target_id, key) target_id, key, name, brand, bkey, eff, product_id
+      FROM comp_today
+      ORDER BY target_id, key, eff ASC
+    ),
+    comp_prior_by_key AS (
+      SELECT DISTINCT ON (target_id, key) target_id, key, eff
+      FROM comp_prior
+      ORDER BY target_id, key, eff ASC
+    ),
+
+    -- Join: brand gate + gshock handled via bkey (G-SHOCK products in name excluded
+    -- when brands disagree — exact same predicate as compareSkus)
+    matched AS (
+      SELECT
+        ct.target_id,
+        mt.key,
+        ct.name,
+        ct.brand,
+        mlp.eff                  AS mt_price_today,
+        ct.eff                   AS comp_price_today,
+        mlp_prior.eff_p          AS mt_price_prior,
+        cp.eff                   AS comp_price_prior
+      FROM mt_by_key mt
+      JOIN mt_latest_price mlp ON mlp.product_id = mt.product_id
+      -- MT prior price (best available from any captured_date in prior dates across all competitors)
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(pr.sale_price, pr.price)::float8 AS eff_p
+        FROM prices pr
+        WHERE pr.product_id = mt.product_id
+          AND pr.captured_date IN (SELECT d FROM prior)
+        ORDER BY pr.captured_date DESC LIMIT 1
+      ) mlp_prior ON true
+      JOIN comp_today_by_key ct
+        ON ct.key = mt.key
+        AND (mt.bkey = ct.bkey OR (mt.bkey = '' AND ct.bkey = ''))
+      LEFT JOIN comp_prior_by_key cp
+        ON cp.target_id = ct.target_id AND cp.key = ct.key
+    )
+    SELECT target_id, key, name, brand,
+           mt_price_today::text, comp_price_today::text,
+           mt_price_prior::text, comp_price_prior::text
+    FROM matched
+    ORDER BY target_id, abs(comp_price_today - mt_price_today) DESC
+  `);
+  return rows<UndercutRow>(result);
+}
+
+// ── 6. FRESHNESS (E3) ───────────────────────────────────────────────────────
 
 interface FreshnessRow {
   target_id: string;
@@ -655,7 +825,7 @@ export async function dailyDigest(
   const settings = await getAppSettings(db);
 
   // Run all signal groups in parallel
-  const [latestDate, salesData, adsData, socialData, inventoryData, freshnessData] =
+  const [latestDate, salesData, adsData, socialData, inventoryData, freshnessData, undercutRows] =
     await Promise.all([
       fetchLatestPricesDate(db),
       querySales(db, filter, days),
@@ -663,7 +833,52 @@ export async function dailyDigest(
       querySocial(db, filter, days),
       queryInventory(db, filter, days, settings.discountThresholdPct),
       queryFreshness(db, filter),
+      queryPriceUndercuts(db, filter, days),
     ]);
+
+  // Build undercut maps per target
+  type UndercutItem = {
+    ref: string;
+    name: string;
+    brand: string | null;
+    mtPrice: number;
+    compPrice: number;
+    deltaPct: number | null;
+  };
+  const newlyUndercutByTarget = new Map<string, UndercutItem[]>();
+  const resolvedByTarget = new Map<string, UndercutItem[]>();
+
+  for (const r of undercutRows) {
+    const mtToday = parseFloat(r.mt_price_today);
+    const compToday = parseFloat(r.comp_price_today);
+    const mtPrior = r.mt_price_prior != null ? parseFloat(r.mt_price_prior) : null;
+    const compPrior = r.comp_price_prior != null ? parseFloat(r.comp_price_prior) : null;
+
+    const item: UndercutItem = {
+      ref: r.key,
+      name: r.name,
+      brand: r.brand,
+      mtPrice: Math.round(mtToday),
+      compPrice: Math.round(compToday),
+      deltaPct: compToday > 0 ? Math.round(((compToday - mtToday) / compToday) * 100) : null,
+    };
+
+    // Newly undercut: competitor now cheaper than MT, but wasn't before
+    // (or we have no prior data — treat as newly undercut when first seen as undercut)
+    const undercutToday = compToday < mtToday;
+    const undercutPrior = compPrior != null && mtPrior != null ? compPrior < mtPrior : false;
+
+    if (undercutToday && !undercutPrior) {
+      const arr = newlyUndercutByTarget.get(r.target_id) ?? [];
+      arr.push(item);
+      newlyUndercutByTarget.set(r.target_id, arr);
+    } else if (!undercutToday && undercutPrior) {
+      // Resolved: competitor was cheaper but is no longer
+      const arr = resolvedByTarget.get(r.target_id) ?? [];
+      arr.push(item);
+      resolvedByTarget.set(r.target_id, arr);
+    }
+  }
 
   // Collect all target IDs that appear in any signal group. Freshness rows
   // count too: a competitor whose scrapes all fail must still show up (stale),
@@ -676,6 +891,8 @@ export async function dailyDigest(
   for (const r of inventoryData.stockouts) allTargetIds.add(r.target_id);
   for (const r of inventoryData.priceMoves) allTargetIds.add(r.target_id);
   for (const r of freshnessData) allTargetIds.add(r.target_id);
+  for (const [tid] of newlyUndercutByTarget) allTargetIds.add(tid);
+  for (const [tid] of resolvedByTarget) allTargetIds.add(tid);
 
   // Exclude own brand (is_self) — this is a competitor digest. Belt-and-suspenders
   // in case any signal source slipped a self target in.
@@ -828,6 +1045,12 @@ export async function dailyDigest(
           from: parseFloat(p.from_price),
           to: parseFloat(p.to_price),
         })),
+      },
+      priceUndercuts: {
+        newlyUndercut: (newlyUndercutByTarget.get(targetId) ?? []).slice(0, 10),
+        resolved: (resolvedByTarget.get(targetId) ?? []).slice(0, 10),
+        totalNewlyUndercut: (newlyUndercutByTarget.get(targetId) ?? []).length,
+        totalResolved: (resolvedByTarget.get(targetId) ?? []).length,
       },
     };
 

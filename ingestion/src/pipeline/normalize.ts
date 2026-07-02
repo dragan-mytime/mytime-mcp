@@ -95,13 +95,21 @@ function refScore(raw: string): number {
  * Best manufacturer reference from a product: a ref-like `sku`, else the most
  * ref-like token anywhere in the `name`, else the `slug`. Uppercased. Used as the
  * cross-vendor match key (after normalizeModelKey). Returns null if nothing usable.
+ *
+ * The returned `source` distinguishes how the ref was derived:
+ *   'attr' — came from the explicit sku attribute (highest trust)
+ *   'name' — extracted from the product name (high trust)
+ *   'slug' — fell back to the URL slug (low trust; callers should NOT use this
+ *            as a cross-vendor match key because generic slugs produce false matches)
  */
 export function parseModelRef(
   name: string | null,
   sku: string | null,
   slug: string | null,
-): string | null {
-  if (sku && refScore(sku) > 0) return sku.replace(/[(),]/g, "").trim().toUpperCase();
+): { ref: string; source: "attr" | "name" | "slug" } | null {
+  if (sku && refScore(sku) > 0) {
+    return { ref: sku.replace(/[(),]/g, "").trim().toUpperCase(), source: "attr" };
+  }
   let best: string | null = null;
   let bestScore = 0;
   for (const tok of (name ?? "").split(/\s+/)) {
@@ -111,9 +119,9 @@ export function parseModelRef(
       best = tok.replace(/[(),]/g, "").trim();
     }
   }
-  if (best) return best.toUpperCase();
+  if (best) return { ref: best.toUpperCase(), source: "name" };
   const s = (slug ?? "").trim();
-  return s.length >= 5 ? s.toUpperCase() : null;
+  return s.length >= 5 ? { ref: s.toUpperCase(), source: "slug" } : null;
 }
 
 /** Cross-vendor match key: uppercase alphanumerics only; null if < 5 chars. */

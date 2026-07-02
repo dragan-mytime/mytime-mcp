@@ -196,7 +196,7 @@ export function parseProduct(html: string, url: string): ProductObservation | nu
   const stockQuantity = qtyMatch?.[1] ? Number(qtyMatch[1]) : null;
   const inStock = avail.includes("instock") || stockQuantity != null;
   const sku = cleanText(node.sku) ?? cleanText(node.mpn);
-  const modelRef = parseModelRef(name, sku, null);
+  const modelRef = parseModelRef(name, sku, null)?.ref ?? null;
 
   return {
     externalId: sku ?? url.split("/").filter(Boolean).pop() ?? url,
@@ -270,7 +270,7 @@ export function parseOg(
     externalId: idMatch?.[1] ?? url.split("/").filter(Boolean).pop() ?? url,
     name: name ?? url,
     brand: normalizeBrand(metaContent(html, "product:brand") ?? metaContent(html, "og:brand")),
-    modelRef: parseModelRef(name, null, null),
+    modelRef: parseModelRef(name, null, null)?.ref ?? null,
     category: null,
     productType: normalizeType(null, name, opts.typeDefault ?? null),
     gender: normalizeGender(name) ?? opts.genderDefault ?? null,

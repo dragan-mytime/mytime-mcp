@@ -62,7 +62,7 @@ function mapItem(it: FeedItem): ProductObservation {
     externalId: String(it.ID ?? name),
     name,
     brand: normalizeBrand(it.brand),
-    modelRef: parseModelRef(name, null, null),
+    modelRef: parseModelRef(name, null, null)?.ref ?? null,
     category: cleanText(it.fileUnder),
     productType: normalizeType(cleanText(it.fileUnder), name),
     gender: null,
