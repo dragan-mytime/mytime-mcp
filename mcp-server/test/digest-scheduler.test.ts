@@ -34,9 +34,12 @@ const dueSchedules = vi.fn(async (_db: unknown, today: string, hhmm: string) =>
     .filter((s) => s.enabled && s.sendAt <= hhmm && (s.lastRunOn == null || s.lastRunOn < today))
     .map(({ id, name, body, recipients }) => ({ id, name, body, recipients })),
 );
+// Atomic claim, like the real UPDATE … WHERE not-run-today RETURNING.
 const markScheduleRan = vi.fn(async (_db: unknown, id: string, today: string) => {
   const s = schedules.find((x) => x.id === id);
-  if (s) s.lastRunOn = today;
+  if (!s || (s.lastRunOn != null && s.lastRunOn >= today)) return false;
+  s.lastRunOn = today;
+  return true;
 });
 const clearScheduleRun = vi.fn(async (_db: unknown, id: string, today: string) => {
   const s = schedules.find((x) => x.id === id);
@@ -131,6 +134,19 @@ describe("tick", () => {
     await tick(db, at("05:01"));
     expect(sendDigestEmail).toHaveBeenCalledTimes(2); // 1 failed + 1 retry
     expect(schedules[0]?.lastRunOn).toBe("2026-06-29");
+  });
+
+  it("lost claim race: due row already claimed elsewhere → no send, claim untouched", async () => {
+    // Another instance claimed today between our due query and our claim:
+    // dueSchedules returns a stale row, but the atomic claim returns false.
+    dueSchedules.mockResolvedValueOnce([
+      { id: "daily-0700", name: "Daily 07:00", body: "prompt", recipients: null },
+    ]);
+    for (const s of schedules) s.lastRunOn = "2026-06-29";
+    await tick(db, at("05:01"));
+    expect(sendDigestEmail).not.toHaveBeenCalled();
+    expect(clearScheduleRun).not.toHaveBeenCalled();
+    expect(schedules[0]?.lastRunOn).toBe("2026-06-29"); // winner's claim intact
   });
 
   it("a disabled schedule never fires, even past its time", async () => {

@@ -35,9 +35,10 @@ export function skopjeNow(d: Date = new Date()): { date: string; hhmm: string } 
 /**
  * One scheduler tick: send every due schedule once, failure-isolated per
  * schedule. Due = send time reached and not yet run today (catch-up, see
- * `dueSchedules`). Each schedule is marked ran BEFORE sending: a hard crash
- * mid-send skips the day rather than double-sending; a thrown send clears the
- * mark so the next tick retries.
+ * `dueSchedules`). Each schedule's run is CLAIMED atomically before sending
+ * (`markScheduleRan` returns false if another instance/tick already claimed
+ * today): a hard crash mid-send skips the day rather than double-sending; a
+ * thrown send clears the claim so the next tick retries.
  */
 export async function tick(db: Db, now: Date = new Date()): Promise<void> {
   const { date, hhmm } = skopjeNow(now);
@@ -49,8 +50,21 @@ export async function tick(db: Db, now: Date = new Date()): Promise<void> {
   const due = await dueSchedules(db, date, hhmm);
   for (const s of due) {
     const startedAt = new Date();
+    // Atomic claim OUTSIDE the try: if it returns false (someone else claimed
+    // between the due query and here) we must not send and must NOT clear the
+    // winner's claim in the catch path.
+    let claimed = false;
     try {
-      await markScheduleRan(db, s.id, date);
+      claimed = await markScheduleRan(db, s.id, date);
+    } catch (err) {
+      logger.error({ err, schedule: s.id }, "digest run claim failed — will retry next tick");
+      continue;
+    }
+    if (!claimed) {
+      logger.info({ schedule: s.id }, "digest already claimed for today — skipping");
+      continue;
+    }
+    try {
       const digest = await dailyDigest(db);
       const apiKey = await resolveGeminiKey(db);
       const mail = await renderDigestWithPrompt(digest, s.body, apiKey);

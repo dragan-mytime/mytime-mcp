@@ -41,8 +41,12 @@ export interface AppSettings {
   digestEnabled: boolean;
 }
 
-/** Coerce a stored jsonb value to a positive integer, or null if unset/invalid. */
-const posInt = (v: unknown): number | null => {
+/**
+ * Coerce a stored jsonb value to a positive integer, or null if unset/invalid.
+ * Exported so the admin settings form can distinguish stored-vs-unset without
+ * duplicating the parse rules.
+ */
+export const parsePosInt = (v: unknown): number | null => {
   if (v == null) return null;
   const n = Number(v);
   return Number.isInteger(n) && n >= 1 ? n : null;
@@ -51,9 +55,9 @@ const posInt = (v: unknown): number | null => {
 /** Pure parse of raw app_settings rows → typed knobs. Unset/invalid → default. */
 export function parseAppSettings(raw: Record<string, unknown>): AppSettings {
   return {
-    discountThresholdPct: posInt(raw.discount_threshold_pct) ?? 5,
-    adResultsLimit: posInt(raw.ad_results_limit) ?? 50,
-    webMaxProducts: posInt(raw.web_max_products),
+    discountThresholdPct: parsePosInt(raw.discount_threshold_pct) ?? 5,
+    adResultsLimit: parsePosInt(raw.ad_results_limit) ?? 50,
+    webMaxProducts: parsePosInt(raw.web_max_products),
     digestEnabled: typeof raw.digest_enabled === "boolean" ? raw.digest_enabled : true,
   };
 }

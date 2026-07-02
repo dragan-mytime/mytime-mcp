@@ -1,4 +1,4 @@
-import { allSettings, maskGeminiKey, setSetting } from "@mytime/db";
+import { allSettings, maskGeminiKey, parseAppSettings, parsePosInt, setSetting } from "@mytime/db";
 import type { Request } from "express";
 import { adminWriteDb } from "../../writePool.js";
 import { isSuperAdmin } from "../auth.js";
@@ -10,33 +10,23 @@ interface AdminReq extends Request {
   body: Record<string, unknown>;
 }
 
-interface SettingsDefaults {
-  discount_threshold_pct: number;
-  ad_results_limit: number;
-  web_max_products: number;
-  digest_enabled: boolean;
-}
-
-const DEFAULTS: SettingsDefaults = {
-  discount_threshold_pct: 5,
-  ad_results_limit: 50,
-  web_max_products: 100000,
-  digest_enabled: true,
-};
-
 export async function render(req: Request): Promise<string> {
   const admin = (req as AdminReq).admin;
   const db = adminWriteDb();
 
   const stored = await allSettings(db);
+  // Single source of truth for defaults/parsing: @mytime/db (parseAppSettings /
+  // parsePosInt). Numeric inputs show a value only when one is stored and valid;
+  // otherwise they render blank with the effective default in the placeholder.
+  // Blank fields are skipped on save (see submit), so saving the form never
+  // silently persists a default the readers didn't already apply.
   const vals = {
-    discount_threshold_pct: Number(
-      stored["discount_threshold_pct"] ?? DEFAULTS.discount_threshold_pct,
-    ),
-    ad_results_limit: Number(stored["ad_results_limit"] ?? DEFAULTS.ad_results_limit),
-    web_max_products: Number(stored["web_max_products"] ?? DEFAULTS.web_max_products),
-    digest_enabled: Boolean(stored["digest_enabled"] ?? DEFAULTS.digest_enabled),
+    discount_threshold_pct: parsePosInt(stored.discount_threshold_pct),
+    ad_results_limit: parsePosInt(stored.ad_results_limit),
+    web_max_products: parsePosInt(stored.web_max_products),
+    digest_enabled: parseAppSettings(stored).digestEnabled,
   };
+  const numVal = (v: number | null): string => (v == null ? "" : String(v));
 
   const checkedAttr = vals.digest_enabled ? " checked" : "";
 
@@ -66,21 +56,22 @@ export async function render(req: Request): Promise<string> {
         ${csrfField(admin.csrf)}
 
         <label>Discount threshold (%)<br>
-          <small class="note">Minimum discount % to flag in digest alerts</small>
+          <small class="note">Minimum price-move % flagged in digest + dashboard. Blank = default 5.</small>
           <input type="number" name="discount_threshold_pct" min="1" max="100"
-            value="${esc(vals.discount_threshold_pct)}">
+            value="${esc(numVal(vals.discount_threshold_pct))}" placeholder="unset — default 5">
         </label>
 
         <label>Ad results limit<br>
-          <small class="note">Max ad observations returned per target per run</small>
+          <small class="note">Max ad observations returned per target per run. Blank = default 50.</small>
           <input type="number" name="ad_results_limit" min="1" max="500"
-            value="${esc(vals.ad_results_limit)}">
+            value="${esc(numVal(vals.ad_results_limit))}" placeholder="unset — default 50">
         </label>
 
         <label>Web max products<br>
-          <small class="note">Upper cap on products scraped per target per run</small>
+          <small class="note">Upper cap on products scraped per target per run.
+            Blank = server WEB_MAX_PRODUCTS env, else 300.</small>
           <input type="number" name="web_max_products" min="100" max="1000000"
-            value="${esc(vals.web_max_products)}">
+            value="${esc(numVal(vals.web_max_products))}" placeholder="unset — env WEB_MAX_PRODUCTS, else 300">
         </label>
 
         <label style="display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem;">
@@ -108,25 +99,30 @@ export async function submit(
     return { error: "Bad CSRF" };
   }
 
-  const discountPct = Number(body["discount_threshold_pct"]);
-  const adLimit = Number(body["ad_results_limit"]);
-  const webMax = Number(body["web_max_products"]);
+  // Blank numeric field = "leave unset" — never persisted, so the readers'
+  // built-in defaults (5 / 50 / env→300) stay in effect. Non-blank values are
+  // range-validated then stored.
+  const numeric: { key: string; min: number; max: number; label: string }[] = [
+    { key: "discount_threshold_pct", min: 1, max: 100, label: "Discount threshold" },
+    { key: "ad_results_limit", min: 1, max: 500, label: "Ad results limit" },
+    { key: "web_max_products", min: 100, max: 1_000_000, label: "Web max products" },
+  ];
+  const toStore: { key: string; value: number }[] = [];
+  for (const f of numeric) {
+    const rawVal = String(body[f.key] ?? "").trim();
+    if (rawVal === "") continue; // untouched/blank → leave unset
+    const n = Number(rawVal);
+    if (!Number.isInteger(n) || n < f.min || n > f.max) {
+      return {
+        error: `${f.label} must be an integer between ${f.min} and ${f.max.toLocaleString("en")}`,
+      };
+    }
+    toStore.push({ key: f.key, value: n });
+  }
   const digestEnabled = body["digest_enabled"] === "1" || body["digest_enabled"] === "on";
 
-  if (!Number.isInteger(discountPct) || discountPct < 1 || discountPct > 100) {
-    return { error: "Discount threshold must be an integer between 1 and 100" };
-  }
-  if (!Number.isInteger(adLimit) || adLimit < 1 || adLimit > 500) {
-    return { error: "Ad results limit must be an integer between 1 and 500" };
-  }
-  if (!Number.isInteger(webMax) || webMax < 100 || webMax > 1_000_000) {
-    return { error: "Web max products must be an integer between 100 and 1 000 000" };
-  }
-
   const db = adminWriteDb();
-  await setSetting(db, "discount_threshold_pct", discountPct);
-  await setSetting(db, "ad_results_limit", adLimit);
-  await setSetting(db, "web_max_products", webMax);
+  for (const s of toStore) await setSetting(db, s.key, s.value);
   await setSetting(db, "digest_enabled", digestEnabled);
 
   // Gemini API key — super-admin only; never trust the form for the gate.

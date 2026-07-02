@@ -219,8 +219,24 @@ export async function dueSchedules(
   }));
 }
 
-export async function markScheduleRan(db: Db, id: string, todayLocal: string): Promise<void> {
-  await db.update(digestSchedules).set({ lastRunOn: todayLocal }).where(eq(digestSchedules.id, id));
+/**
+ * Atomically claim today's run: sets last_run_on = todayLocal only if the
+ * schedule has not already run today (`UPDATE … WHERE … RETURNING`). Returns
+ * true when this caller won the claim — send only then. Makes the
+ * mark-then-send protocol safe even if two scheduler instances tick at once.
+ */
+export async function markScheduleRan(db: Db, id: string, todayLocal: string): Promise<boolean> {
+  const claimed = await db
+    .update(digestSchedules)
+    .set({ lastRunOn: todayLocal })
+    .where(
+      and(
+        eq(digestSchedules.id, id),
+        or(isNull(digestSchedules.lastRunOn), lt(digestSchedules.lastRunOn, todayLocal)),
+      ),
+    )
+    .returning({ id: digestSchedules.id });
+  return claimed.length > 0;
 }
 
 /**
