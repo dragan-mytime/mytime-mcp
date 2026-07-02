@@ -4,6 +4,7 @@ import {
   deactivateMissingProducts,
   ensureSocialAccount,
   ensureTargetAndLocation,
+  getAppSettings,
   loadTargetsFromDb,
   recordRun,
   writeAdObservations,
@@ -44,6 +45,9 @@ export interface RunSummary {
 export async function run(runDate: string = skopjeDate()): Promise<RunSummary> {
   const db = createDb(requireEnv("DATABASE_URL"));
   const targets = await loadTargetsFromDb(db);
+  // Admin knobs (app_settings), read once at run start with safe defaults:
+  // ad_results_limit (meta-ads) and web_max_products (web collectors).
+  const appSettings = await getAppSettings(db);
   const summary: RunSummary = {
     runDate,
     attempted: 0,
@@ -79,7 +83,11 @@ export async function run(runDate: string = skopjeDate()): Promise<RunSummary> {
       const startedAt = new Date();
       try {
         const locationId = await ensureTargetAndLocation(db, target);
-        const obs = await collector.collect({ target, runDate });
+        const obs = await collector.collect({
+          target,
+          runDate,
+          maxProducts: appSettings.webMaxProducts ?? undefined,
+        });
         const rows = await writeObservations(db, target, locationId, runDate, collector.id, obs);
         summary.succeeded++;
         summary.rows += rows;
@@ -211,7 +219,7 @@ export async function run(runDate: string = skopjeDate()): Promise<RunSummary> {
       summary.attempted++;
       const startedAt = new Date();
       try {
-        const byTarget = await collectCompetitorAds(pages, runDate);
+        const byTarget = await collectCompetitorAds(pages, runDate, appSettings.adResultsLimit);
         let rows = 0;
         for (const [tid, ads] of byTarget) rows += await writeAdObservations(db, tid, runDate, ads);
         summary.succeeded++;

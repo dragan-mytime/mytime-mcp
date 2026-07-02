@@ -34,7 +34,8 @@ const SITES: Record<string, SiteConfig> = {
   // crawls; with no SITES entry they degrade to 0 rows until added.
 };
 
-const MAX = Number(optionalEnv("WEB_MAX_PRODUCTS", "300"));
+/** Fallback cap when the admin `web_max_products` setting is unset: env, then 300. */
+const ENV_MAX = Number(optionalEnv("WEB_MAX_PRODUCTS", "300"));
 
 async function fetchText(url: string): Promise<string> {
   const res = await fetch(url, {
@@ -307,14 +308,15 @@ async function mapPool<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R>
 
 /**
  * FireCrawl-assigned web collector for SSR storefronts (Saat&Saat, Swarovski,
- * Hronometar). Enumerates via sitemap, parses JSON-LD per product. Capped by
- * WEB_MAX_PRODUCTS per run.
+ * Hronometar). Enumerates via sitemap, parses JSON-LD per product. Capped per
+ * run by the admin `web_max_products` setting (ctx.maxProducts), falling back
+ * to the WEB_MAX_PRODUCTS env, then 300.
  */
 export const webJsonLdCollector: ProductCollector = {
   id: "web-jsonld",
   label: "Web JSON-LD (FireCrawl-assigned sites)",
   appliesTo: (t) => t.web.platform != null && t.id in SITES,
-  async collect({ target }: CollectorContext): Promise<ProductObservation[]> {
+  async collect({ target, maxProducts }: CollectorContext): Promise<ProductObservation[]> {
     const cfg = SITES[target.id];
     if (!cfg) return [];
     const base = new URL(target.web.url ?? "").origin;
@@ -323,7 +325,7 @@ export const webJsonLdCollector: ProductCollector = {
       : cfg.sitemap
         ? await collectSitemapUrls(cfg.sitemap, cfg.productUrl)
         : [];
-    const urls = enumerated.slice(0, MAX);
+    const urls = enumerated.slice(0, maxProducts ?? ENV_MAX);
     const results = await mapPool(urls, CONCURRENCY, async (url) => {
       try {
         const html = await fetchHtml(url);

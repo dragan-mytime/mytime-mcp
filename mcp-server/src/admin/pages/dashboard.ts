@@ -1,4 +1,4 @@
-import { dailyDigest } from "@mytime/db";
+import { dailyDigest, getAppSettings } from "@mytime/db";
 import type { Request } from "express";
 import { adminWriteDb, adminWritePool } from "../../writePool.js";
 
@@ -69,6 +69,10 @@ async function gather(): Promise<unknown> {
   const db = adminWriteDb();
   const pool = adminWritePool();
 
+  // Admin knob: min % price change that counts as a "price move" (default 5).
+  const { discountThresholdPct } = await getAppSettings(db);
+  const moveThresholdFrac = discountThresholdPct / 100;
+
   const [digest, names, counts, disc, ads, moves, stock, social] = await Promise.all([
     dailyDigest(db),
     pool.query<NameRow>("SELECT id, name FROM targets WHERE is_self = false"),
@@ -110,7 +114,8 @@ async function gather(): Promise<unknown> {
       )
       SELECT target_id, ad_title, days_running, media_url, media_type, link_url, snapshot_url
       FROM a WHERE rn <= 40 ORDER BY target_id, days_running DESC NULLS LAST`),
-    pool.query<MoveRow>(`
+    pool.query<MoveRow>(
+      `
       WITH ranked AS (
         SELECT pr.product_id, p.target_id, p.name, p.brand, p.gender, p.product_type, pr.price::float8 AS price,
                ROW_NUMBER() OVER (PARTITION BY pr.product_id ORDER BY pr.captured_date DESC) AS rn
@@ -127,10 +132,12 @@ async function gather(): Promise<unknown> {
       m AS (
         SELECT target_id, name, brand, gender, product_type, from_p, to_p,
                ROW_NUMBER() OVER (PARTITION BY target_id ORDER BY abs(to_p - from_p)/NULLIF(from_p,0) DESC) AS rn
-        FROM piv WHERE from_p IS NOT NULL AND from_p > 0 AND abs(to_p - from_p)/from_p > 0.05
+        FROM piv WHERE from_p IS NOT NULL AND from_p > 0 AND abs(to_p - from_p)/from_p > $1
       )
       SELECT target_id, name, brand, gender, product_type, from_p AS from_price, to_p AS to_price
-      FROM m WHERE rn <= 60 ORDER BY target_id`),
+      FROM m WHERE rn <= 60 ORDER BY target_id`,
+      [moveThresholdFrac],
+    ),
     pool.query<StockRow>(`
       WITH ranked AS (
         SELECT inv.product_id, p.target_id, p.name, p.gender, p.product_type, inv.stock_status,

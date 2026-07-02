@@ -6,6 +6,12 @@ export interface CollectorContext {
   target: Target;
   /** UTC date (YYYY-MM-DD) every observation in this run is stamped with. */
   runDate: string;
+  /**
+   * Cap on products enumerated per target (admin `web_max_products` setting).
+   * Absent when unset in the admin panel — sources apply their own env/default
+   * fallback (web-jsonld: WEB_MAX_PRODUCTS env, then 300).
+   */
+  maxProducts?: number;
 }
 
 /**

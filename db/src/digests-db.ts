@@ -1,5 +1,5 @@
 import { optionalEnv } from "@mytime/shared";
-import { and, asc, eq, isNull, lt, or } from "drizzle-orm";
+import { and, asc, eq, isNull, lt, lte, or } from "drizzle-orm";
 import type { Db } from "./index.js";
 import {
   type DigestPromptRow,
@@ -54,16 +54,18 @@ export function validRecipients(list: string[]): boolean {
 
 /**
  * Pure mirror of the `dueSchedules` SQL WHERE clause (kept in sync with it):
- * enabled, time matches, and not yet run today. `lastRunOn` is a "YYYY-MM-DD"
- * string, so the `<` compare is chronological. Unit-tested; if this changes,
- * update the query in `dueSchedules` to match.
+ * enabled, send time reached (`sendAt <= hhmm`, so a missed exact minute still
+ * catches up later the same day), and not yet run today. `lastRunOn` guards
+ * idempotency: both it and `todayLocal` are "YYYY-MM-DD" strings, so the `<`
+ * compare is chronological. Unit-tested; if this changes, update the query in
+ * `dueSchedules` to match.
  */
 export function isDue(
   s: { sendAt: string; enabled: boolean; lastRunOn: string | null },
   todayLocal: string,
   hhmm: string,
 ): boolean {
-  return s.enabled && s.sendAt === hhmm && (s.lastRunOn == null || s.lastRunOn < todayLocal);
+  return s.enabled && s.sendAt <= hhmm && (s.lastRunOn == null || s.lastRunOn < todayLocal);
 }
 
 /** Generate a slug from `name` that is unique among existing ids in the given column. */
@@ -182,7 +184,12 @@ export interface DueSchedule {
   recipients: string[] | null;
 }
 
-/** Enabled schedules whose send_at == hhmm and that have not run on todayLocal yet. */
+/**
+ * Enabled schedules whose send_at <= hhmm and that have not run on todayLocal
+ * yet. `<=` (not `==`) so a missed 60s tick (deploy, restart, slow render)
+ * catches up on the next tick instead of silently skipping the day; last_run_on
+ * keeps the catch-up idempotent.
+ */
 export async function dueSchedules(
   db: Db,
   todayLocal: string,
@@ -200,7 +207,7 @@ export async function dueSchedules(
     .where(
       and(
         eq(digestSchedules.enabled, true),
-        eq(digestSchedules.sendAt, hhmm),
+        lte(digestSchedules.sendAt, hhmm),
         or(isNull(digestSchedules.lastRunOn), lt(digestSchedules.lastRunOn, todayLocal)),
       ),
     );
@@ -214,6 +221,17 @@ export async function dueSchedules(
 
 export async function markScheduleRan(db: Db, id: string, todayLocal: string): Promise<void> {
   await db.update(digestSchedules).set({ lastRunOn: todayLocal }).where(eq(digestSchedules.id, id));
+}
+
+/**
+ * Undo `markScheduleRan` after a failed send so the next tick retries — but
+ * only if the mark is still todayLocal (never clobber another day's run).
+ */
+export async function clearScheduleRun(db: Db, id: string, todayLocal: string): Promise<void> {
+  await db
+    .update(digestSchedules)
+    .set({ lastRunOn: null })
+    .where(and(eq(digestSchedules.id, id), eq(digestSchedules.lastRunOn, todayLocal)));
 }
 
 /** A schedule's recipients, or the global digest_recipients setting, or a final default. */

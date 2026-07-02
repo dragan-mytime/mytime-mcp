@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { Db } from "./index.js";
+import { getAppSettings } from "./settings.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -480,6 +481,7 @@ interface PriceMoveRow {
 async function queryInventory(
   db: Db,
   competitorFilter: string | undefined,
+  moveThresholdPct: number,
 ): Promise<{
   agg: InvAggRow[];
   stockouts: StockoutRow[];
@@ -548,7 +550,9 @@ async function queryInventory(
     ORDER BY target_id, name
   `);
 
-  // Price moves: price changed by >5% between the two most recent prices dates
+  // Price moves: price changed by more than the admin-set threshold
+  // (discount_threshold_pct, default 5%) between the two most recent prices dates
+  const moveThresholdFrac = moveThresholdPct / 100;
   const priceMovesResult = await db.execute(sql`
     WITH dd AS (
       SELECT DISTINCT pr.captured_date
@@ -580,7 +584,7 @@ async function queryInventory(
         AND (SELECT d FROM prior_date) IS NOT NULL
         AND (SELECT d FROM today_date) <> (SELECT d FROM prior_date)
         AND pr_prior.price::float8 > 0
-        AND ABS(pr_today.price::float8 - pr_prior.price::float8) / pr_prior.price::float8 > 0.05
+        AND ABS(pr_today.price::float8 - pr_prior.price::float8) / pr_prior.price::float8 > ${moveThresholdFrac}
         AND p.target_id NOT IN (SELECT id FROM targets WHERE is_self = true)
         ${filterClause}
     )
@@ -622,13 +626,16 @@ export async function dailyDigest(
 ): Promise<DigestResult> {
   const filter = opts.competitor;
 
+  // Admin knobs (discount_threshold_pct drives the price-move cutoff below).
+  const settings = await getAppSettings(db);
+
   // Run all signal groups in parallel
   const [latestDate, salesData, adsData, socialData, inventoryData] = await Promise.all([
     fetchLatestPricesDate(db),
     querySales(db, filter),
     queryAds(db, filter),
     querySocial(db, filter),
-    queryInventory(db, filter),
+    queryInventory(db, filter, settings.discountThresholdPct),
   ]);
 
   // Collect all target IDs that appear in any signal group
