@@ -57,6 +57,13 @@
       "when": 1782994651435,
       "tag": "0007_smart_klaw",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1783017742113,
+      "tag": "0008_large_blackheart",
+      "breakpoints": true
     }
   ]
 }

@@ -119,17 +119,50 @@ export function getCode(code: string): AuthCode | undefined {
 export const deleteCode = (code: string): void => void codes.delete(code);
 
 // ── Refresh tokens — persisted (hashed) ──────────────────────────────────────
+
+/**
+ * D4 review: rotation reuse tolerance (OAuth 2.1 §4.3). When a refresh token is
+ * rotated, the old row is MARKED superseded rather than deleted. If the client
+ * never received (or failed to persist) the new token and retries with the old
+ * one within this grace window, `getRefresh` resolves to the successor row so
+ * the refresh still succeeds instead of forcing a browser re-auth. DB-backed so
+ * the grace survives process restarts/deploys.
+ */
+export const ROTATION_GRACE_MS = 60_000;
+
 export interface RefreshRec {
   email: string;
   role: Role;
   clientId: string;
   scopes: string[];
   createdAt: Date;
+  /** Hash of the ACTIVE row this lookup resolved to (successor when within grace). */
+  tokenHash: string;
+}
+
+interface RefreshRow {
+  token_hash: string;
+  email: string;
+  role: Role;
+  client_id: string;
+  scopes: string[];
+  created_at: Date | string;
+  superseded_by_hash: string | null;
+  superseded_at: Date | string | null;
+}
+
+async function getRefreshRow(pool: Pool, hash: string): Promise<RefreshRow | undefined> {
+  const { rows } = await pool.query<RefreshRow>(
+    `SELECT token_hash, email, role, client_id, scopes, created_at, superseded_by_hash, superseded_at
+     FROM oauth_refresh_tokens WHERE token_hash = $1`,
+    [hash],
+  );
+  return rows[0];
 }
 export async function putRefresh(
   pool: Pool,
   t: string,
-  r: Omit<RefreshRec, "createdAt">,
+  r: Omit<RefreshRec, "createdAt" | "tokenHash">,
 ): Promise<void> {
   await pool.query(
     `INSERT INTO oauth_refresh_tokens (token_hash, email, role, client_id, scopes)
@@ -137,55 +170,69 @@ export async function putRefresh(
     [hashToken(t), r.email, r.role, r.clientId, JSON.stringify(r.scopes)],
   );
 }
+/**
+ * Look up a refresh token. Follows the supersession chain: a superseded row
+ * presented within ROTATION_GRACE_MS of its superseded_at resolves to its
+ * successor (transparent retry after a lost rotation response); outside the
+ * grace window the stale row is deleted and the lookup fails.
+ */
 export async function getRefresh(pool: Pool, t: string): Promise<RefreshRec | undefined> {
-  const { rows } = await pool.query<{
-    email: string;
-    role: Role;
-    client_id: string;
-    scopes: string[];
-    created_at: Date;
-  }>(
-    "SELECT email, role, client_id, scopes, created_at FROM oauth_refresh_tokens WHERE token_hash = $1",
-    [hashToken(t)],
-  );
-  const row = rows[0];
-  return row
-    ? {
-        email: row.email,
-        role: row.role,
-        clientId: row.client_id,
-        scopes: row.scopes,
-        createdAt: row.created_at,
-      }
-    : undefined;
+  let row = await getRefreshRow(pool, hashToken(t));
+  // Bounded chain-follow: each hop must be within its own grace window.
+  for (let hop = 0; row?.superseded_by_hash; hop++) {
+    const supAt = row.superseded_at ? new Date(row.superseded_at).getTime() : 0;
+    if (hop >= 5 || Date.now() - supAt > ROTATION_GRACE_MS) {
+      // Reuse outside the grace window → invalid_grant; drop the stale row.
+      await pool.query("DELETE FROM oauth_refresh_tokens WHERE token_hash = $1", [row.token_hash]);
+      return undefined;
+    }
+    row = await getRefreshRow(pool, row.superseded_by_hash);
+  }
+  if (!row) return undefined;
+  return {
+    email: row.email,
+    role: row.role,
+    clientId: row.client_id,
+    scopes: row.scopes,
+    createdAt: new Date(row.created_at),
+    tokenHash: row.token_hash,
+  };
 }
 export async function deleteRefresh(pool: Pool, t: string): Promise<void> {
   await pool.query("DELETE FROM oauth_refresh_tokens WHERE token_hash = $1", [hashToken(t)]);
 }
+/** Delete by the resolved row hash (from RefreshRec.tokenHash) rather than the raw token. */
+export async function deleteRefreshByHash(pool: Pool, hash: string): Promise<void> {
+  await pool.query("DELETE FROM oauth_refresh_tokens WHERE token_hash = $1", [hash]);
+}
 
-/** D4: replace old refresh token with a new one in a single transaction. */
+/**
+ * D4: rotate a refresh token. Marks the old row superseded (grace-window reuse
+ * tolerance — see ROTATION_GRACE_MS) and inserts the new row in one atomic
+ * statement, then garbage-collects superseded rows past the grace window.
+ */
 export async function rotateRefresh(
   pool: Pool,
-  oldToken: string,
+  oldHash: string,
   newToken: string,
-  r: Omit<RefreshRec, "createdAt">,
+  r: Omit<RefreshRec, "createdAt" | "tokenHash">,
 ): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query("DELETE FROM oauth_refresh_tokens WHERE token_hash = $1", [
-      hashToken(oldToken),
-    ]);
-    await client.query(
-      `INSERT INTO oauth_refresh_tokens (token_hash, email, role, client_id, scopes)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [hashToken(newToken), r.email, r.role, r.clientId, JSON.stringify(r.scopes)],
-    );
-    await client.query("COMMIT");
-  } catch (err) {
-    await client.query("ROLLBACK");
-    throw err;
-  } finally {
-    client.release();
-  }
+  // Single-statement CTE keeps mark+insert atomic without a client transaction.
+  await pool.query(
+    `WITH mark AS (
+       UPDATE oauth_refresh_tokens
+       SET superseded_by_hash = $1, superseded_at = now()
+       WHERE token_hash = $2
+     )
+     INSERT INTO oauth_refresh_tokens (token_hash, email, role, client_id, scopes)
+     VALUES ($1, $3, $4, $5, $6)
+     ON CONFLICT (token_hash) DO NOTHING`,
+    [hashToken(newToken), oldHash, r.email, r.role, r.clientId, JSON.stringify(r.scopes)],
+  );
+  // Cleanup: superseded rows past the grace window can never be used again.
+  await pool.query(
+    `DELETE FROM oauth_refresh_tokens
+     WHERE superseded_at IS NOT NULL AND superseded_at < now() - make_interval(secs => $1)`,
+    [ROTATION_GRACE_MS / 1000],
+  );
 }

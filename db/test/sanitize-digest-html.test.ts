@@ -85,6 +85,30 @@ describe("sanitizeDigestHtml", () => {
     expect(out).toContain("text");
   });
 
+  it("closes a neutralized javascript: link with </span>, not an orphaned </a>", () => {
+    const out = sanitizeDigestHtml('<a href="javascript:alert(1)">click</a>');
+    expect(out).toBe("<span>click</span>");
+  });
+
+  it("closes mixed safe and unsafe links with their matching close tags", () => {
+    const out = sanitizeDigestHtml(
+      '<a href="https://ok.com">safe</a> and <a href="javascript:x">bad</a>',
+    );
+    expect(out).toBe(
+      '<a href="https://ok.com" rel="noopener noreferrer">safe</a> and <span>bad</span>',
+    );
+  });
+
+  it("handles nested safe-inside-unsafe links with correct close order", () => {
+    const out = sanitizeDigestHtml('<a href="javascript:x"><a href="https://ok.com">inner</a></a>');
+    expect(out).toBe('<span><a href="https://ok.com" rel="noopener noreferrer">inner</a></span>');
+  });
+
+  it("closes an unbalanced </a> as </a> without throwing", () => {
+    const out = sanitizeDigestHtml("orphan</a>");
+    expect(out).toBe("orphan</a>");
+  });
+
   it("handles empty input gracefully", () => {
     expect(sanitizeDigestHtml("")).toBe("");
   });

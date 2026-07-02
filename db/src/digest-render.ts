@@ -152,43 +152,45 @@ const ALLOWED_TAGS = new Set(["h2", "h3", "p", "ul", "ol", "li", "strong", "em",
  */
 export function sanitizeDigestHtml(html: string): string {
   // Remove script/style/iframe elements including their inner content.
-  let out = html.replace(/<(script|style|iframe)[\s\S]*?<\/\1\s*>/gi, "");
+  const stripped = html.replace(/<(script|style|iframe)[\s\S]*?<\/\1\s*>/gi, "");
+
+  // Track whether each open <a> was kept or neutralized to <span>, so the
+  // matching </a> closes the right element. String.replace processes matches
+  // in document order, so a simple stack is sufficient.
+  const aNeutralized: boolean[] = [];
 
   // Process remaining tags: keep allowed, strip others.
-  out = out.replace(/<\/?([a-z][a-z0-9]*)[^>]*>/gi, (match, tag: string) => {
+  return stripped.replace(/<\/?([a-z][a-z0-9]*)[^>]*>/gi, (match, tag: string) => {
     const tagLower = tag.toLowerCase();
     if (!ALLOWED_TAGS.has(tagLower)) return "";
 
-    const isSelfClose = /\/\s*>$/.test(match);
     const isClose = /^<\//.test(match);
 
     if (tagLower === "br") return "<br>";
-    if (isClose) return `</${tagLower}>`;
 
     if (tagLower === "a") {
+      if (isClose) {
+        // Close whatever the matching opener became (unbalanced close → </a>,
+        // harmless since we never emitted an unsafe opener).
+        return (aNeutralized.pop() ?? false) ? "</span>" : "</a>";
+      }
       // Extract href attribute value (double or single quoted).
       const hrefMatch = match.match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*))/i);
       const href = hrefMatch?.[1] ?? hrefMatch?.[2] ?? hrefMatch?.[3] ?? "";
       if (/^https?:\/\//i.test(href)) {
+        aNeutralized.push(false);
         return `<a href="${href.replace(/"/g, "&quot;")}" rel="noopener noreferrer">`;
       }
       // No safe href → render as <span> so content is preserved but link is neutralized.
+      aNeutralized.push(true);
       return "<span>";
     }
 
+    if (isClose) return `</${tagLower}>`;
+
     // For all other allowed tags: emit just the bare tag with no attributes.
-    return isSelfClose ? `<${tagLower}>` : `<${tagLower}>`;
+    return `<${tagLower}>`;
   });
-
-  // Patch closing tags for <a> that we replaced with <span>.
-  // We can't easily do this in a single pass without a parser, so we do a
-  // second-pass: any </a> that was NOT converted yet might be left; since
-  // we replaced opening <a> with either <a...> or <span>, we need to close
-  // them appropriately. Simplest safe approach: close remaining </a> as </a>
-  // (they're already stripped of bad content since we just emitted safe openers).
-  // The above regex already handles </a> → </a> via the isClose branch for 'a'.
-
-  return out;
 }
 
 /** Deterministic bilingual fallback (EN then MK) used when Gemini is unavailable. */

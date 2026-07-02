@@ -16,6 +16,7 @@ import { googleAuthUrl, passesDomainGate, verifyGoogleCallback } from "./google.
 import {
   deleteCode,
   deleteRefresh,
+  deleteRefreshByHash,
   getClient,
   getCode,
   getRefresh,
@@ -118,20 +119,22 @@ export function createMyTimeProvider(pool: Pool): OAuthServerProvider {
       refreshToken: string,
       scopes?: string[],
     ): Promise<OAuthTokens> {
+      // getRefresh resolves a superseded token to its successor when the retry
+      // lands within the rotation grace window (lost-response reuse tolerance).
       const rec = await getRefresh(pool, refreshToken);
       if (!rec || rec.clientId !== client.client_id) throw new Error("invalid_grant");
 
       // D4a: reject refresh tokens older than 90 days.
       const maxAgeMs = 90 * 24 * 60 * 60 * 1000;
       if (Date.now() - rec.createdAt.getTime() > maxAgeMs) {
-        await deleteRefresh(pool, refreshToken);
+        await deleteRefreshByHash(pool, rec.tokenHash);
         throw new Error("invalid_grant");
       }
 
       // Re-check the whitelist so deactivations / role changes take effect on refresh.
       const u = await lookupAuthorizedUser(pool, rec.email);
       if (!u?.active) {
-        await deleteRefresh(pool, refreshToken);
+        await deleteRefreshByHash(pool, rec.tokenHash);
         throw new Error("invalid_grant");
       }
 
@@ -142,9 +145,10 @@ export function createMyTimeProvider(pool: Pool): OAuthServerProvider {
         throw new Error("invalid_scope");
       }
 
-      // D4b: rotate — issue new refresh token and revoke the old one atomically.
+      // D4b: rotate — mark the active row superseded (grace window) + insert the
+      // new token atomically; the client gets the new refresh_token below.
       const newRefreshToken = randomToken();
-      await rotateRefresh(pool, refreshToken, newRefreshToken, {
+      await rotateRefresh(pool, rec.tokenHash, newRefreshToken, {
         email: rec.email,
         role: u.role,
         clientId: client.client_id,
