@@ -170,11 +170,33 @@ export async function socialBenchmark(pool: Pool, opts: { platform?: string; met
       p.push(opts.platform);
       pf = `AND sa.platform = $${p.length}::social_platform`;
     }
+    // posts_in_window: count of posts in the 30-day scraper window — may be
+    // capped by scraper depth (IG ~12, FB/TikTok ~15 per run), so it
+    // undercounts prolific posters, especially early after onboarding (B6).
+    // postsPerWeek: derived from the observed first→last post timestamp span in
+    // the window — gives a truer cadence when posts_in_window hits the cap.
+    // Use postsPerWeek when it disagrees with posts_in_window/4.3; if only one
+    // post is in the window postsPerWeek is null (span = 0).
+    // pctEstimatedReach: share of posts in the window whose reach_source is
+    // 'estimate' (follower-based constant) rather than 'views'/'measured' (B9).
+    // Engagement: IG = likes+comments; FB = reactions+comments+shares;
+    // TikTok = digg+comments+shares; MY:TIME same per platform.
     const { rows } = await pool.query(
       `SELECT t.id AS target_id, sa.platform,
               count(*)::int AS posts_in_window,
               round(avg(sp.engagement)) AS avg_engagement,
-              round(avg(100.0 * sp.engagement / NULLIF(fol.followers,0)), 2) AS avg_engagement_rate
+              round(avg(100.0 * sp.engagement / NULLIF(fol.followers,0)), 2) AS avg_engagement_rate,
+              round(100.0 * count(*) FILTER (WHERE sp.reach_source = 'estimate')
+                    / NULLIF(count(*), 0), 1) AS pct_estimated_reach,
+              CASE
+                WHEN count(*) > 1
+                THEN round(
+                  count(*)::numeric
+                  / GREATEST(1, (max(sp.posted_at)::date - min(sp.posted_at)::date)::numeric)
+                  * 7,
+                2)
+                ELSE NULL
+              END AS posts_per_week
        FROM social_posts sp
        JOIN social_accounts sa ON sa.id = sp.social_account_id
        JOIN targets t ON t.id = sa.target_id
@@ -192,8 +214,8 @@ export async function socialBenchmark(pool: Pool, opts: { platform?: string; met
       platform: opts.platform ?? "all",
       note:
         metric === "cadence"
-          ? "Posts per target×platform in the last 30 days (posting cadence), incl. MY:TIME."
-          : "Avg engagement + engagementRate (engagement÷followers) per target×platform, last 30 days, incl. MY:TIME. Prefer engagementRate for cross-comparison.",
+          ? "Posts per target×platform in the last 30 days, incl. MY:TIME. posts_in_window is scraper-depth-capped (IG ~12, FB/TikTok ~15 per run) and undercounts prolific posters, especially early after onboarding. postsPerWeek is derived from the observed first→last post timestamp span and is more reliable when the cap is hit; null when only one post is in the window."
+          : "Avg engagement + engagementRate (engagement÷latest followers) per target×platform, last 30 days, incl. MY:TIME. Prefer engagementRate for cross-comparison. Engagement: IG = likes+comments; FB = reactions+comments+shares; TikTok = digg+comments+shares. pctEstimatedReach: share of posts using a follower-based reach estimate rather than a real metric.",
       rows,
     };
   }
@@ -373,16 +395,38 @@ interface SocialPostQueryRow {
   reach_source: string | null;
   posted_at: string | null;
   rn: string;
+  // cross-platform (partition by target only — backwards-compat top-level fields)
   posts_in_window: string;
   avg_engagement: string | null;
   avg_reach: string | null;
   engagement_rate: string | null;
   avg_engagement_rate: string | null;
+  pct_estimated_reach: string | null;
+  // per-platform (partition by target + platform)
+  pp_posts_in_window: string;
+  pp_avg_engagement: string | null;
+  pp_avg_reach: string | null;
+  pp_avg_engagement_rate: string | null;
+  pp_pct_estimated_reach: string | null;
 }
 
 /**
  * Recent social posts per competitor with engagement + estimated reach (labeled by
- * source). Returns posting cadence, averages, and the top posts by engagement.
+ * source). Returns:
+ *  - top-level cross-platform aggregate per competitor (backwards-compatible)
+ *  - perPlatform breakdown so IG/FB/TikTok rates are not blended (B5)
+ *  - pctEstimatedReach in both aggregates: % of posts whose reach is estimated (B9)
+ *  - per-post list unchanged
+ *
+ * Engagement definitions (B4): IG = likes+comments; FB = reactions+comments+shares;
+ * TikTok = digg+comments+shares; own-brand (MY:TIME) uses the same formula as
+ * competitors per platform. engagementRate = engagement ÷ latest followers (latest
+ * snapshot — fine for the 30-day window; would drift for longer windows).
+ *
+ * Reach labels: 'views' (TikTok) or 'estimate' (IG/FB formula × followers) for
+ * competitors; 'measured' or 'estimate' for MY:TIME (measured once Meta Insights
+ * permission is granted). pctEstimatedReach shows what share of posts used the
+ * formula rather than a real metric.
  */
 export async function socialPosts(
   pool: Pool,
@@ -405,12 +449,23 @@ export async function socialPosts(
        SELECT t.id AS competitor, sa.platform, sp.caption, sp.permalink, sp.media_url,
               sp.post_type, sp.likes, sp.comments, sp.shares, sp.views, sp.engagement,
               sp.estimated_reach, sp.reach_source, sp.posted_at,
+              -- top-level post rank (cross-platform, for top-N selection)
               row_number() OVER (PARTITION BY t.id ORDER BY sp.engagement DESC NULLS LAST) AS rn,
+              -- cross-platform aggregates per target (backwards-compat top-level fields)
               count(*) OVER (PARTITION BY t.id) AS posts_in_window,
               round(avg(sp.engagement) OVER (PARTITION BY t.id)) AS avg_engagement,
               round(avg(sp.estimated_reach) OVER (PARTITION BY t.id)) AS avg_reach,
               round(100.0 * sp.engagement / NULLIF(f.followers,0), 2) AS engagement_rate,
-              round(avg(100.0 * sp.engagement / NULLIF(f.followers,0)) OVER (PARTITION BY t.id), 2) AS avg_engagement_rate
+              round(avg(100.0 * sp.engagement / NULLIF(f.followers,0)) OVER (PARTITION BY t.id), 2) AS avg_engagement_rate,
+              round(100.0 * count(*) FILTER (WHERE sp.reach_source = 'estimate') OVER (PARTITION BY t.id)
+                    / NULLIF(count(*) OVER (PARTITION BY t.id), 0), 1) AS pct_estimated_reach,
+              -- per-platform aggregates (B5: partition by target + platform)
+              count(*) OVER (PARTITION BY t.id, sa.platform) AS pp_posts_in_window,
+              round(avg(sp.engagement) OVER (PARTITION BY t.id, sa.platform)) AS pp_avg_engagement,
+              round(avg(sp.estimated_reach) OVER (PARTITION BY t.id, sa.platform)) AS pp_avg_reach,
+              round(avg(100.0 * sp.engagement / NULLIF(f.followers,0)) OVER (PARTITION BY t.id, sa.platform), 2) AS pp_avg_engagement_rate,
+              round(100.0 * count(*) FILTER (WHERE sp.reach_source = 'estimate') OVER (PARTITION BY t.id, sa.platform)
+                    / NULLIF(count(*) OVER (PARTITION BY t.id, sa.platform), 0), 1) AS pp_pct_estimated_reach
        FROM social_posts sp
        JOIN social_accounts sa ON sa.id = sp.social_account_id
        JOIN targets t ON t.id = sa.target_id
@@ -425,6 +480,10 @@ export async function socialPosts(
     params,
   );
 
+  // Collect per-platform summaries per competitor from the window data rows.
+  // We deduplicate using a Map keyed by "competitor|platform" so we only store
+  // each platform's aggregate once (all rows for the same target+platform carry
+  // identical window aggregate values).
   const byComp = new Map<
     string,
     {
@@ -433,18 +492,51 @@ export async function socialPosts(
       avgEngagement: number | null;
       avgReach: number | null;
       avgEngagementRate: number | null;
+      pctEstimatedReach: number | null;
+      perPlatform: {
+        platform: string;
+        postsInWindow: number;
+        avgEngagement: number | null;
+        avgEngagementRate: number | null;
+        avgReach: number | null;
+        pctEstimatedReach: number | null;
+      }[];
       posts: unknown[];
     }
   >();
+  const seenPlatform = new Set<string>();
+
   for (const r of rows) {
-    const g = byComp.get(r.competitor) ?? {
-      competitor: r.competitor,
-      postsInWindow: Number(r.posts_in_window),
-      avgEngagement: r.avg_engagement === null ? null : Number(r.avg_engagement),
-      avgReach: r.avg_reach === null ? null : Number(r.avg_reach),
-      avgEngagementRate: r.avg_engagement_rate === null ? null : Number(r.avg_engagement_rate),
-      posts: [],
-    };
+    if (!byComp.has(r.competitor)) {
+      byComp.set(r.competitor, {
+        competitor: r.competitor,
+        postsInWindow: Number(r.posts_in_window),
+        avgEngagement: r.avg_engagement === null ? null : Number(r.avg_engagement),
+        avgReach: r.avg_reach === null ? null : Number(r.avg_reach),
+        avgEngagementRate: r.avg_engagement_rate === null ? null : Number(r.avg_engagement_rate),
+        pctEstimatedReach: r.pct_estimated_reach === null ? null : Number(r.pct_estimated_reach),
+        perPlatform: [],
+        posts: [],
+      });
+    }
+    // biome-ignore lint/style/noNonNullAssertion: set unconditionally in the if-block above
+    const g = byComp.get(r.competitor)!;
+
+    const ppKey = `${r.competitor}|${r.platform}`;
+    if (!seenPlatform.has(ppKey)) {
+      seenPlatform.add(ppKey);
+      g.perPlatform.push({
+        platform: r.platform,
+        postsInWindow: Number(r.pp_posts_in_window),
+        avgEngagement: r.pp_avg_engagement === null ? null : Number(r.pp_avg_engagement),
+        avgEngagementRate:
+          r.pp_avg_engagement_rate === null ? null : Number(r.pp_avg_engagement_rate),
+        avgReach: r.pp_avg_reach === null ? null : Number(r.pp_avg_reach),
+        pctEstimatedReach:
+          r.pp_pct_estimated_reach === null ? null : Number(r.pp_pct_estimated_reach),
+      });
+    }
+
     g.posts.push({
       platform: r.platform,
       type: r.post_type,
@@ -461,12 +553,11 @@ export async function socialPosts(
       engagementRate: r.engagement_rate === null ? null : Number(r.engagement_rate),
       postedAt: r.posted_at,
     });
-    byComp.set(r.competitor, g);
   }
   return {
     windowDays: days,
     reachNote:
-      "Compare on engagementRate (engagement ÷ followers). Reach is labeled by source: 'views' or 'estimate' for competitors, 'measured' or 'estimate' for MY:TIME (measured once Meta insights permission is granted).",
+      "Compare on engagementRate (engagement ÷ latest followers). Top-level averages are cross-platform (IG+FB+TikTok blended); use perPlatform for like-for-like comparisons. Engagement: IG = likes+comments; FB = reactions+comments+shares; TikTok = digg+comments+shares; MY:TIME uses the same formula per platform. Reach source: 'views' (TikTok) or 'estimate' (follower-based constant × followers) for competitors; 'measured' or 'estimate' for MY:TIME. pctEstimatedReach shows the share of posts in the window that used an estimated reach figure.",
     results: [...byComp.values()],
   };
 }
