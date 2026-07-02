@@ -1,4 +1,5 @@
 import { type Target, loadTargets, targetsFileSchema } from "@mytime/shared";
+import { eq } from "drizzle-orm";
 import type { Db } from "./index.js";
 import { targets } from "./schema.js";
 
@@ -92,11 +93,12 @@ export async function seedTargetsFromJson(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Load all targets from the DB and return them validated against targetsFileSchema.
+ * Load active targets from the DB and return them validated against targetsFileSchema.
+ * Inactive targets (admin "Active" toggle off) are excluded so daily runs skip them (A2).
  * Throws if validation fails.
  */
 export async function loadTargetsFromDb(db: Db): Promise<Target[]> {
-  const rows = await db.select().from(targets);
+  const rows = await db.select().from(targets).where(eq(targets.active, true));
 
   const mapped = rows.map((row) => rowToTarget(row as unknown as TargetDbRow));
 
